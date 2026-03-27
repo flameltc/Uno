@@ -1,9 +1,13 @@
 import fs from 'node:fs/promises'
 import { dialog, ipcMain } from 'electron'
 
-import type { PreviewRequest, StoredState } from '@shared/types'
+import type { FieldSuggestionRequest, PreviewRequest, StoredState } from '@shared/types'
 import { appendRunLog, loadHistory, loadStoredState, saveStoredState } from './store'
-import { executePreviewRequest, generatePreviewFromDisk } from './organizer-service'
+import {
+  executePreviewRequest,
+  generatePreviewFromDisk,
+  suggestFrequentFieldsFromDisk
+} from './organizer-service'
 
 export function registerIpcHandlers() {
   ipcMain.handle('app:bootstrap', async () => {
@@ -38,6 +42,10 @@ export function registerIpcHandlers() {
 
   ipcMain.handle('state:save', async (_event, state: StoredState) => {
     return saveStoredState(state)
+  })
+
+  ipcMain.handle('fields:suggest', async (_event, request: FieldSuggestionRequest) => {
+    return suggestFrequentFieldsFromDisk(request)
   })
 
   ipcMain.handle('preview:generate', async (_event, request: PreviewRequest) => {

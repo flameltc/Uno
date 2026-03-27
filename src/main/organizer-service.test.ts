@@ -3,7 +3,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { executePreviewItems, generatePreviewFromDisk, scanSourceFiles } from './organizer-service'
+import {
+  executePreviewItems,
+  generatePreviewFromDisk,
+  scanSourceFiles,
+  suggestFrequentFieldsFromDisk
+} from './organizer-service'
 import type { PreviewItem } from '@shared/types'
 
 const tempDirs: string[] = []
@@ -68,6 +73,47 @@ describe('generatePreviewFromDisk', () => {
       path.join(otherFolder, '合同-子目录.pdf')
     ])
     expect(preview.items.every((item) => item.targetPath?.startsWith(outputFolder))).toBe(true)
+  })
+})
+
+describe('suggestFrequentFieldsFromDisk', () => {
+  it('ignores managed output folders when source and output share the same root', async () => {
+    const sourceRoot = await makeTempDir()
+    const outputFolder = path.join(sourceRoot, '合同')
+    const otherFolder = path.join(sourceRoot, '收集箱')
+    await fs.mkdir(outputFolder, { recursive: true })
+    await fs.mkdir(otherFolder, { recursive: true })
+    await fs.writeFile(path.join(sourceRoot, '合同-张三.pdf'), 'a')
+    await fs.writeFile(path.join(sourceRoot, '合同-李四.pdf'), 'b')
+    await fs.writeFile(path.join(outputFolder, '合同-已整理.pdf'), 'c')
+    await fs.writeFile(path.join(otherFolder, '发票-张三.pdf'), 'd')
+
+    const result = await suggestFrequentFieldsFromDisk({
+      sourceRoot,
+      outputRoot: sourceRoot,
+      maxResults: 10,
+      rules: [
+        {
+          id: 'contract',
+          name: '合同',
+          keywords: ['合同'],
+          outputFolderName: '合同',
+          enabled: true,
+          priority: 1
+        }
+      ]
+    })
+
+    expect(result.scannedFileCount).toBe(3)
+    expect(result.suggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: '合同', count: 2 }),
+        expect.objectContaining({ value: '张三', count: 2 })
+      ])
+    )
+    expect(result.suggestions).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ value: '已整理' })])
+    )
   })
 })
 

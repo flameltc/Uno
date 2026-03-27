@@ -2,6 +2,7 @@ export type PreviewStatus = 'matched' | 'unmatched' | 'error'
 export type PreviewAction = 'move' | 'skip'
 export type ConflictResolution = 'none' | 'auto-rename'
 export type PreviewTab = 'matched' | 'unmatched' | 'error'
+export type AppView = 'home' | 'rules' | 'guide'
 
 export interface RuleConfig {
   id: string
@@ -18,6 +19,7 @@ export interface AppSettings {
   theme: 'github-light'
   locale: 'zh-CN'
   windowLayout: {
+    activeView: AppView
     activeTab: PreviewTab
   }
 }
@@ -31,6 +33,24 @@ export interface PreviewRequest {
   sourceRoot: string
   outputRoot: string
   rules: RuleConfig[]
+}
+
+export interface FieldSuggestion {
+  value: string
+  count: number
+  sampleFileName: string
+}
+
+export interface FieldSuggestionRequest {
+  sourceRoot: string
+  outputRoot?: string
+  rules?: RuleConfig[]
+  maxResults?: number
+}
+
+export interface FieldSuggestionResult {
+  scannedFileCount: number
+  suggestions: FieldSuggestion[]
 }
 
 export interface PreviewItem {
@@ -91,6 +111,7 @@ export interface DesktopApi {
   pickFolder: () => Promise<string | null>
   inspectPath: (targetPath: string) => Promise<PathInspection>
   saveState: (state: StoredState) => Promise<StoredState>
+  suggestFields: (request: FieldSuggestionRequest) => Promise<FieldSuggestionResult>
   generatePreview: (request: PreviewRequest) => Promise<PreviewResult>
   executeRun: (request: PreviewRequest) => Promise<RunLog>
 }

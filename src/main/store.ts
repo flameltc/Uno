@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'github-light',
   locale: 'zh-CN',
   windowLayout: {
+    activeView: 'home',
     activeTab: 'matched'
   }
 }

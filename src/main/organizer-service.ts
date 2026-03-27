@@ -1,8 +1,17 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+import { suggestFrequentFields } from '@shared/field-suggestions'
 import { generatePreviewItems } from '@shared/organizer'
-import type { PreviewItem, PreviewRequest, PreviewResult, RunLog, RunSummary } from '@shared/types'
+import type {
+  FieldSuggestionRequest,
+  FieldSuggestionResult,
+  PreviewItem,
+  PreviewRequest,
+  PreviewResult,
+  RunLog,
+  RunSummary
+} from '@shared/types'
 
 export interface FileOps {
   mkdir: (targetDir: string) => Promise<void>
@@ -39,7 +48,11 @@ async function pathExists(targetPath: string) {
   }
 }
 
-function buildIgnoredRoots(sourceRoot: string, outputRoot: string, outputFolderNames: string[] = []) {
+function buildIgnoredRoots(sourceRoot: string, outputRoot?: string, outputFolderNames: string[] = []) {
+  if (!outputRoot) {
+    return []
+  }
+
   const normalizedSourceRoot = normalizeRootForComparison(sourceRoot)
   const normalizedOutputRoot = normalizeRootForComparison(outputRoot)
 
@@ -83,10 +96,25 @@ async function walkFiles(rootPath: string, ignoredRoots: string[] = []): Promise
   return files
 }
 
-export async function scanSourceFiles(sourceRoot: string, outputRoot: string, outputFolderNames: string[] = []) {
+export async function scanSourceFiles(sourceRoot: string, outputRoot?: string, outputFolderNames: string[] = []) {
   const ignoredRoots = buildIgnoredRoots(sourceRoot, outputRoot, outputFolderNames)
   const files = await walkFiles(sourceRoot, ignoredRoots)
   return files.sort((left, right) => left.localeCompare(right, 'zh-CN'))
+}
+
+export async function suggestFrequentFieldsFromDisk(
+  request: FieldSuggestionRequest
+): Promise<FieldSuggestionResult> {
+  const filePaths = await scanSourceFiles(
+    request.sourceRoot,
+    request.outputRoot,
+    request.rules?.map((rule) => rule.outputFolderName) ?? []
+  )
+
+  return {
+    scannedFileCount: filePaths.length,
+    suggestions: suggestFrequentFields(filePaths, request.maxResults)
+  }
 }
 
 async function collectExistingTargetPaths(outputRoot: string) {
