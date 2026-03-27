@@ -1,7 +1,7 @@
 {
   "name": "namesort",
   "version": "0.1.0",
-  "description": "GitHub-style desktop file organizer for Windows.",
+  "description": "Uno desktop file organizer for Windows.",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -22,8 +22,8 @@
   "author": "",
   "license": "MIT",
   "build": {
-    "appId": "com.namesort.desktop",
-    "productName": "NameSort",
+    "appId": "com.uno.desktop",
+    "productName": "Uno",
     "asar": true,
     "directories": {
       "output": "release/${version}",

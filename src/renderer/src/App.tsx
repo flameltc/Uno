@@ -54,6 +54,14 @@ interface NoticeState {
   message: string
 }
 
+interface ConfirmState {
+  title: string
+  description: string
+  confirmLabel: string
+  confirmTone: 'default' | 'danger'
+  onConfirm: () => Promise<void>
+}
+
 interface RuleDraft {
   id?: string
   name: string
@@ -77,6 +85,8 @@ const DEFAULT_STATE: StoredState = {
   settings: DEFAULT_SETTINGS,
   rules: []
 }
+
+const RULE_END_DROP_TARGET = '__rule-end-drop-target__'
 
 function emptyRuleDraft(): RuleDraft {
   return {
@@ -232,6 +242,41 @@ function RuleEditorDialog({
   )
 }
 
+function ConfirmDialog({
+  confirmState,
+  confirming,
+  onConfirm,
+  onOpenChange
+}: {
+  confirmState: ConfirmState | null
+  confirming: boolean
+  onConfirm: () => void
+  onOpenChange: (open: boolean) => void
+}) {
+  return (
+    <Dialog open={Boolean(confirmState)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{confirmState?.title}</DialogTitle>
+          <DialogDescription>{confirmState?.description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={confirming}>
+            取消
+          </Button>
+          <Button
+            variant={confirmState?.confirmTone === 'danger' ? 'danger' : 'default'}
+            onClick={onConfirm}
+            disabled={confirming}
+          >
+            {confirming ? '处理中...' : confirmState?.confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function DropPathField({
   description,
   label,
@@ -315,11 +360,14 @@ export default function App() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [ruleDraft, setRuleDraft] = useState<RuleDraft>(emptyRuleDraft())
   const [notice, setNotice] = useState<NoticeState | null>(null)
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
+  const [confirmingAction, setConfirmingAction] = useState(false)
   const [fieldSuggestions, setFieldSuggestions] = useState<FieldSuggestionResult | null>(null)
   const [suggestingFields, setSuggestingFields] = useState(false)
   const [selectedSuggestionValues, setSelectedSuggestionValues] = useState<string[]>([])
   const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([])
   const [draggedRuleId, setDraggedRuleId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
@@ -401,6 +449,20 @@ export default function App() {
       ...storedState,
       rules: nextRules
     })
+  }
+
+  async function handleConfirmAction() {
+    if (!confirmState) {
+      return
+    }
+
+    setConfirmingAction(true)
+    try {
+      await confirmState.onConfirm()
+      setConfirmState(null)
+    } finally {
+      setConfirmingAction(false)
+    }
   }
 
   useEffect(() => {
@@ -623,7 +685,19 @@ export default function App() {
     setSelectedRuleIds([])
   }
 
-  async function setSelectedRulesEnabled(enabled: boolean) {
+  function confirmDeleteRule(rule: RuleConfig) {
+    setConfirmState({
+      title: '删除这条规则？',
+      description: `规则“${rule.name}”删除后将不再参与预览和整理。`,
+      confirmLabel: '确认删除',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        await deleteRule(rule.id)
+      }
+    })
+  }
+
+  async function applySelectedRulesEnabled(enabled: boolean) {
     if (selectedRuleIds.length === 0) {
       return
     }
@@ -637,7 +711,23 @@ export default function App() {
     )
   }
 
-  async function deleteSelectedRules() {
+  function confirmSelectedRulesEnabled(enabled: boolean) {
+    if (selectedRuleIds.length === 0) {
+      return
+    }
+
+    setConfirmState({
+      title: enabled ? '批量启用选中规则？' : '批量停用选中规则？',
+      description: `将更新 ${selectedRuleIds.length} 条规则的启用状态。`,
+      confirmLabel: enabled ? '确认启用' : '确认停用',
+      confirmTone: 'default',
+      onConfirm: async () => {
+        await applySelectedRulesEnabled(enabled)
+      }
+    })
+  }
+
+  async function applyDeleteSelectedRules() {
     if (selectedRuleIds.length === 0) {
       return
     }
@@ -650,6 +740,22 @@ export default function App() {
       }
     )
     setSelectedRuleIds([])
+  }
+
+  function confirmDeleteSelectedRules() {
+    if (selectedRuleIds.length === 0) {
+      return
+    }
+
+    setConfirmState({
+      title: '批量删除选中规则？',
+      description: `将删除 ${selectedRuleIds.length} 条规则，这一步无法自动撤销。`,
+      confirmLabel: '确认删除',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        await applyDeleteSelectedRules()
+      }
+    })
   }
 
   async function reorderRules(dragRuleId: string, targetRuleId: string) {
@@ -1082,9 +1188,95 @@ export default function App() {
     )
   }
 
+  function renderHomeGuidanceCard() {
+    if (!storedState.settings.lastSourceRoot) {
+      return (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-fg-default">先选择源目录</p>
+              <p className="mt-1 text-sm text-fg-muted">选择后系统才会统计高频字段，并准备扫描文件。</p>
+            </div>
+            <Button variant="outline" onClick={() => void handlePickFolder('source')}>
+              <FolderOpen className="h-4 w-4" />
+              选择源目录
+            </Button>
+          </CardContent>
+        </Card>
+      )
+    }
+
+    if (!storedState.settings.lastOutputRoot) {
+      return (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-fg-default">再补充输出根目录</p>
+              <p className="mt-1 text-sm text-fg-muted">输出根目录决定分类后的目标位置，建议在预览前先固定好。</p>
+            </div>
+            <Button variant="outline" onClick={() => void handlePickFolder('output')}>
+              <FolderOpen className="h-4 w-4" />
+              选择输出目录
+            </Button>
+          </CardContent>
+        </Card>
+      )
+    }
+
+    if (rules.length === 0) {
+      return (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-fg-default">还没有规则</p>
+              <p className="mt-1 text-sm text-fg-muted">可以直接用右侧字段建议生成规则，或去规则管理页手动整理优先级。</p>
+            </div>
+            <Button variant="outline" onClick={() => void setActiveView('rules')}>
+              前往规则管理
+            </Button>
+          </CardContent>
+        </Card>
+      )
+    }
+
+    if (!preview) {
+      return (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-fg-default">可以开始生成预览计划</p>
+              <p className="mt-1 text-sm text-fg-muted">目录和规则都已准备好，建议先确认将发生什么，再执行整理。</p>
+            </div>
+            <Button variant="default" onClick={runPreview} disabled={previewing || executing}>
+              <RefreshCcw className={cn('h-4 w-4', previewing && 'animate-spin')} />
+              生成预览计划
+            </Button>
+          </CardContent>
+        </Card>
+      )
+    }
+
+    return (
+      <Card>
+        <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-fg-default">预览已就绪</p>
+            <p className="mt-1 text-sm text-fg-muted">确认结果表里的命中和重命名都符合预期后，再开始整理。</p>
+          </div>
+          <Button variant="secondary" onClick={executeRun} disabled={previewing || executing}>
+            <Play className="h-4 w-4" />
+            确认后开始整理
+          </Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
   function renderHomePage() {
     return (
       <div className="space-y-5">
+        {renderHomeGuidanceCard()}
+
         <div className="grid gap-4 xl:grid-cols-4">
           <Card>
             <CardContent className="py-4">
@@ -1142,13 +1334,13 @@ export default function App() {
             <Button variant="outline" onClick={clearRuleSelection} disabled={selectedRuleCount === 0}>
               清空选择
             </Button>
-            <Button variant="outline" onClick={() => void setSelectedRulesEnabled(true)} disabled={selectedRuleCount === 0}>
+            <Button variant="outline" onClick={() => confirmSelectedRulesEnabled(true)} disabled={selectedRuleCount === 0}>
               批量启用
             </Button>
-            <Button variant="outline" onClick={() => void setSelectedRulesEnabled(false)} disabled={selectedRuleCount === 0}>
+            <Button variant="outline" onClick={() => confirmSelectedRulesEnabled(false)} disabled={selectedRuleCount === 0}>
               批量停用
             </Button>
-            <Button variant="danger" onClick={() => void deleteSelectedRules()} disabled={selectedRuleCount === 0}>
+            <Button variant="danger" onClick={confirmDeleteSelectedRules} disabled={selectedRuleCount === 0}>
               批量删除
             </Button>
           </CardContent>
@@ -1175,13 +1367,31 @@ export default function App() {
                       draggable
                       onDragStart={(event) => {
                         setDraggedRuleId(rule.id)
+                        setDropTargetId(rule.id)
                         event.dataTransfer.effectAllowed = 'move'
                         event.dataTransfer.setData('text/plain', rule.id)
                       }}
-                      onDragEnd={() => setDraggedRuleId(null)}
+                      onDragEnd={() => {
+                        setDraggedRuleId(null)
+                        setDropTargetId(null)
+                      }}
+                      onDragEnter={() => {
+                        if (draggedRuleId && draggedRuleId !== rule.id) {
+                          setDropTargetId(rule.id)
+                        }
+                      }}
+                      onDragLeave={(event) => {
+                        const nextTarget = event.relatedTarget as Node | null
+                        if (!event.currentTarget.contains(nextTarget)) {
+                          setDropTargetId((current) => (current === rule.id ? null : current))
+                        }
+                      }}
                       onDragOver={(event) => {
                         event.preventDefault()
                         event.dataTransfer.dropEffect = 'move'
+                        if (draggedRuleId && draggedRuleId !== rule.id) {
+                          setDropTargetId(rule.id)
+                        }
                       }}
                       onDrop={(event) => {
                         event.preventDefault()
@@ -1189,11 +1399,15 @@ export default function App() {
                           void reorderRules(draggedRuleId, rule.id)
                         }
                         setDraggedRuleId(null)
+                        setDropTargetId(null)
                       }}
                       className={cn(
-                        'rounded-md border border-border-default bg-canvas-card p-4 transition-colors',
+                        'rounded-md border border-border-default bg-canvas-card p-4 transition-colors duration-150',
                         selected && 'border-accent bg-accent-muted/40',
-                        draggedRuleId === rule.id && 'opacity-60'
+                        draggedRuleId === rule.id && 'opacity-60',
+                        dropTargetId === rule.id &&
+                          draggedRuleId !== rule.id &&
+                          'border-accent bg-accent-muted/25 shadow-[inset_0_2px_0_0_#0969da]'
                       )}
                     >
                       <div className="flex items-start gap-3">
@@ -1213,17 +1427,31 @@ export default function App() {
                           </div>
                           <p className="mt-2 text-sm text-fg-muted">{rule.keywords.join(' / ')}</p>
                           <p className="mt-2 text-code text-fg-subtle">{rule.outputFolderName}</p>
-                          <p className="mt-3 text-xs text-fg-muted">拖动卡片可调整顺序。</p>
+                          <p className="mt-3 text-xs text-fg-muted">
+                            {dropTargetId === rule.id && draggedRuleId !== rule.id
+                              ? '释放后会插入到这条规则之前。'
+                              : '拖动卡片可调整顺序。'}
+                          </p>
                         </div>
                         <div className="flex items-center gap-2">
                           <Switch
                             checked={rule.enabled}
                             onCheckedChange={(checked) => void toggleRule(rule.id, checked)}
                           />
-                          <Button variant="ghost" size="sm" onClick={() => openEditRuleDialog(rule)}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`编辑规则 ${rule.name}`}
+                            onClick={() => openEditRuleDialog(rule)}
+                          >
                             <PencilLine className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => void deleteRule(rule.id)}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`删除规则 ${rule.name}`}
+                            onClick={() => confirmDeleteRule(rule)}
+                          >
                             <Trash2 className="h-4 w-4 text-danger" />
                           </Button>
                         </div>
@@ -1233,10 +1461,27 @@ export default function App() {
                 })}
 
                 <div
-                  className="rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-3 text-center text-sm text-fg-muted"
+                  className={cn(
+                    'rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-3 text-center text-sm text-fg-muted transition-colors duration-150',
+                    dropTargetId === RULE_END_DROP_TARGET && 'border-accent bg-accent-muted/25 text-accent'
+                  )}
+                  onDragEnter={() => {
+                    if (draggedRuleId) {
+                      setDropTargetId(RULE_END_DROP_TARGET)
+                    }
+                  }}
                   onDragOver={(event) => {
                     event.preventDefault()
                     event.dataTransfer.dropEffect = 'move'
+                    if (draggedRuleId) {
+                      setDropTargetId(RULE_END_DROP_TARGET)
+                    }
+                  }}
+                  onDragLeave={(event) => {
+                    const nextTarget = event.relatedTarget as Node | null
+                    if (!event.currentTarget.contains(nextTarget)) {
+                      setDropTargetId((current) => (current === RULE_END_DROP_TARGET ? null : current))
+                    }
                   }}
                   onDrop={(event) => {
                     event.preventDefault()
@@ -1244,9 +1489,10 @@ export default function App() {
                       void moveRuleToEnd(draggedRuleId)
                     }
                     setDraggedRuleId(null)
+                    setDropTargetId(null)
                   }}
                 >
-                  将卡片拖到这里可放到列表末尾
+                  {dropTargetId === RULE_END_DROP_TARGET ? '释放后会移动到列表末尾' : '将卡片拖到这里可放到列表末尾'}
                 </div>
               </>
             )}
@@ -1309,8 +1555,8 @@ export default function App() {
 
   const pageMeta: Record<AppView, { title: string; description: string }> = {
     home: {
-      title: '文件名分类整理',
-      description: '首页保留主要功能：选目录、查看字段建议、预览整理和执行整理。'
+      title: '一格',
+      description: '一格（Uno）首页保留主要功能：选目录、查看字段建议、预览整理和执行整理。'
     },
     rules: {
       title: '规则管理',
@@ -1342,7 +1588,7 @@ export default function App() {
               <div>
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="rounded-md border border-border-default bg-canvas-default px-2 py-1 text-sm font-semibold text-fg-muted">
-                    NameSort
+                    Uno
                   </div>
                   <Badge variant="neutral">GitHub Light</Badge>
                   <Badge variant="accent">Windows</Badge>
@@ -1404,19 +1650,24 @@ export default function App() {
                   onDropPath={(targetPath) => void handleDroppedPath('output', targetPath)}
                 />
               </div>
-              <div className="flex flex-wrap justify-end gap-2 border-t border-border-muted px-5 py-4">
-                <Button variant="default" onClick={runPreview} disabled={previewing || executing}>
-                  <RefreshCcw className={cn('h-4 w-4', previewing && 'animate-spin')} />
-                  预览整理
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={executeRun}
-                  disabled={!preview || previewing || executing}
-                >
-                  <Play className="h-4 w-4" />
-                  开始整理
-                </Button>
+              <div className="flex flex-col gap-3 border-t border-border-muted px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="text-sm text-fg-muted">
+                  当前建议：先生成预览计划，再执行真实整理。
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="default" onClick={runPreview} disabled={previewing || executing}>
+                    <RefreshCcw className={cn('h-4 w-4', previewing && 'animate-spin')} />
+                    生成预览计划
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={executeRun}
+                    disabled={!preview || previewing || executing}
+                  >
+                    <Play className="h-4 w-4" />
+                    确认后开始整理
+                  </Button>
+                </div>
               </div>
             </>
           ) : null}
@@ -1444,6 +1695,16 @@ export default function App() {
           }
         }}
         onSave={() => void handleSaveRule()}
+      />
+      <ConfirmDialog
+        confirmState={confirmState}
+        confirming={confirmingAction}
+        onConfirm={() => void handleConfirmAction()}
+        onOpenChange={(open) => {
+          if (!open && !confirmingAction) {
+            setConfirmState(null)
+          }
+        }}
       />
     </div>
   )

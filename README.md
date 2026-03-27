@@ -1,4 +1,4 @@
-# NameSort
+# 一格 Uno
 
 一个面向 Windows 的本地桌面文件整理工具。它会扫描你选择的源目录，按照你配置的关键词规则，先生成预览，再把命中文件移动到输出根目录下对应的分类文件夹。
 
@@ -72,7 +72,7 @@ npm run dist
 
 当前打包产物示例：
 
-- `release/0.1.0/NameSort-0.1.0-portable.exe`
+- `release/0.1.0/Uno-0.1.0-portable.exe`
 
 ## 使用流程
 
@@ -107,7 +107,7 @@ npm run dist
 在 Windows 上通常位于：
 
 ```text
-%APPDATA%/NameSort
+%APPDATA%/Uno
 ```
 
 ## 主要目录结构
