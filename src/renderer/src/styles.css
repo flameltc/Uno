@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border-default;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas-default font-sans text-fg-default antialiased;
+  }
+
+  button,
+  input,
+  textarea {
+    @apply outline-none;
+  }
+
+  ::selection {
+    background: #ddf4ff;
+  }
+}
+
+@layer components {
+  .surface-panel {
+    @apply rounded-lg border border-border-default bg-canvas-card shadow-panel;
+  }
+
+  .section-title {
+    @apply text-sm font-semibold text-fg-default;
+  }
+
+  .section-subtitle {
+    @apply text-sm text-fg-muted;
+  }
+}
+
+@layer utilities {
+  .text-code {
+    @apply font-mono text-[13px];
+  }
+}
