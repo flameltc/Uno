@@ -1,6 +1,7 @@
 import path from 'node:path'
 
 import type { PreviewItem, PreviewResult, RuleConfig } from './types'
+import { normalizeRules } from './rules'
 
 interface GeneratePreviewItemsInput {
   sourceRoot: string
@@ -8,6 +9,11 @@ interface GeneratePreviewItemsInput {
   filePaths: string[]
   rules: RuleConfig[]
   existingTargetPaths: string[]
+}
+
+interface RuleMatchResult {
+  rule: RuleConfig
+  matchedKeywords: string[]
 }
 
 function normalizeKeyword(keyword: string) {
@@ -18,28 +24,8 @@ function normalizePathKey(targetPath: string) {
   return path.normalize(targetPath).toLocaleLowerCase()
 }
 
-function sortRules(rules: RuleConfig[]) {
-  return [...rules]
-    .map((rule, index) => ({ rule, index }))
-    .sort((left, right) => left.rule.priority - right.rule.priority || left.index - right.index)
-    .map((entry) => entry.rule)
-}
-
-export function matchRule(fileName: string, rules: RuleConfig[]) {
-  const normalizedName = fileName.toLocaleLowerCase()
-
-  return sortRules(rules).find((rule) => {
-    if (!rule.enabled) {
-      return false
-    }
-
-    const keywords = rule.keywords.map(normalizeKeyword).filter(Boolean)
-    if (keywords.length === 0) {
-      return false
-    }
-
-    return keywords.some((keyword) => normalizedName.includes(keyword))
-  })
+function normalizeExtension(extension: string) {
+  return extension.replace(/^\./, '').trim().toLocaleLowerCase()
 }
 
 function splitName(fileName: string) {
@@ -48,6 +34,15 @@ function splitName(fileName: string) {
     extension,
     stem: extension ? fileName.slice(0, -extension.length) : fileName
   }
+}
+
+function matchExtensions(fileName: string, rule: RuleConfig) {
+  if (rule.extensions.length === 0) {
+    return true
+  }
+
+  const currentExtension = normalizeExtension(path.extname(fileName))
+  return rule.extensions.map(normalizeExtension).includes(currentExtension)
 }
 
 function resolveConflictPath(targetPath: string, occupiedPaths: Set<string>) {
@@ -77,6 +72,40 @@ function resolveConflictPath(targetPath: string, occupiedPaths: Set<string>) {
   }
 }
 
+export function getRuleMatch(fileName: string, rule: RuleConfig): RuleMatchResult | null {
+  if (!rule.enabled) {
+    return null
+  }
+
+  if (!matchExtensions(fileName, rule)) {
+    return null
+  }
+
+  const normalizedName = fileName.toLocaleLowerCase()
+  const keywords = rule.keywords.map(normalizeKeyword).filter(Boolean)
+  const excludeKeywords = rule.excludeKeywords.map(normalizeKeyword).filter(Boolean)
+
+  if (keywords.length === 0) {
+    return null
+  }
+
+  if (excludeKeywords.some((keyword) => normalizedName.includes(keyword))) {
+    return null
+  }
+
+  const matchedKeywords = keywords.filter((keyword) => normalizedName.includes(keyword))
+  const isMatch =
+    rule.matchMode === 'all' ? matchedKeywords.length === keywords.length : matchedKeywords.length > 0
+
+  return isMatch ? { rule, matchedKeywords } : null
+}
+
+export function matchRule(fileName: string, rules: RuleConfig[]) {
+  return normalizeRules(rules)
+    .map((rule) => getRuleMatch(fileName, rule))
+    .find((entry): entry is RuleMatchResult => Boolean(entry))?.rule
+}
+
 export function generatePreviewItems({
   sourceRoot: _sourceRoot,
   outputRoot,
@@ -86,42 +115,47 @@ export function generatePreviewItems({
 }: GeneratePreviewItemsInput): PreviewResult {
   const occupiedPaths = new Set(existingTargetPaths.map(normalizePathKey))
   const items: PreviewItem[] = []
-
+  const normalizedRules = normalizeRules(rules)
   const sortedFiles = [...filePaths].sort((left, right) => left.localeCompare(right, 'zh-CN'))
 
   for (const sourcePath of sortedFiles) {
     const fileName = path.basename(sourcePath)
-    const matchedRule = matchRule(fileName, rules)
+    const matchedEntry = normalizedRules
+      .map((rule) => getRuleMatch(fileName, rule))
+      .find((entry): entry is RuleMatchResult => Boolean(entry))
 
-    if (!matchedRule) {
+    if (!matchedEntry) {
       items.push({
         sourcePath,
         fileName,
         action: 'skip',
         status: 'unmatched',
-        message: '未命中任何规则，文件保持原地不动。'
+        executionState: 'pending',
+        message: '未命中任何规则，文件会保留在原位置。'
       })
       continue
     }
 
-    const desiredTargetPath = path.join(outputRoot, matchedRule.outputFolderName, fileName)
+    const desiredTargetPath = path.join(outputRoot, matchedEntry.rule.outputFolderName, fileName)
     const resolvedTarget = resolveConflictPath(desiredTargetPath, occupiedPaths)
     occupiedPaths.add(normalizePathKey(resolvedTarget.targetPath))
 
     items.push({
       sourcePath,
       fileName,
-      matchedRuleId: matchedRule.id,
-      matchedRuleName: matchedRule.name,
+      matchedRuleId: matchedEntry.rule.id,
+      matchedRuleName: matchedEntry.rule.name,
+      matchedKeywords: matchedEntry.matchedKeywords,
       targetPath: resolvedTarget.targetPath,
       finalTargetFileName: resolvedTarget.fileName,
       conflictResolution: resolvedTarget.conflictResolution,
       action: 'move',
       status: 'matched',
+      executionState: 'pending',
       message:
         resolvedTarget.conflictResolution === 'auto-rename'
-          ? `目标目录已存在同名文件，预览中已改名为 ${resolvedTarget.fileName}。`
-          : '已命中规则，准备移动。'
+          ? `目标目录已有同名文件，预览中已改名为 ${resolvedTarget.fileName}。`
+          : '已命中规则，准备整理到目标目录。'
     })
   }
 

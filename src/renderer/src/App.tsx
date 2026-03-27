@@ -1,74 +1,37 @@
-import { useEffect, useState } from 'react'
-import {
-  CheckCircle2,
-  FileWarning,
-  FolderOpen,
-  PencilLine,
-  Play,
-  Plus,
-  RefreshCcw,
-  Trash2,
-  XCircle
-} from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, LayoutPanelLeft, Orbit, ScrollText } from 'lucide-react'
 
+import { ConfirmDialog } from '@renderer/components/app/confirm-dialog'
+import { NoticeBanner } from '@renderer/components/app/notice-banner'
+import { RuleEditorDialog } from '@renderer/components/app/rule-editor-dialog'
+import { Button } from '@renderer/components/ui/button'
+import { createRuleFromSuggestion, normalizeRule, normalizeRules, parseRuleExtensions, parseRuleKeywords } from '@shared/rules'
 import type {
   AppSettings,
-  AppView,
   BootstrapPayload,
   FieldSuggestionResult,
-  PreviewItem,
-  PreviewResult,
-  PreviewTab,
   RuleConfig,
+  RuleFilterMode,
+  RuleGroupMode,
   RunLog,
-  StoredState
+  StoredState,
+  TaskProgressEvent
 } from '@shared/types'
-import { Badge } from '@renderer/components/ui/badge'
-import { Button } from '@renderer/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@renderer/components/ui/card'
+import { GuidePage } from './pages/guide-page'
+import { HomePage } from './pages/home-page'
+import { RulesPage } from './pages/rules-page'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@renderer/components/ui/dialog'
-import { Input } from '@renderer/components/ui/input'
-import { Label } from '@renderer/components/ui/label'
-import { Switch } from '@renderer/components/ui/switch'
-import { Tabs, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
-import { Textarea } from '@renderer/components/ui/textarea'
-import { cn } from '@renderer/lib/utils'
-
-type DisplayPreview = {
-  generatedAt: string
-  items: PreviewItem[]
-  summary: PreviewResult['summary'] | RunLog['summary']
-}
-
-type NoticeTone = 'success' | 'warning' | 'danger' | 'neutral'
-
-interface NoticeState {
-  tone: NoticeTone
-  message: string
-}
-
-interface ConfirmState {
-  title: string
-  description: string
-  confirmLabel: string
-  confirmTone: 'default' | 'danger'
-  onConfirm: () => Promise<void>
-}
-
-interface RuleDraft {
-  id?: string
-  name: string
-  keywordsText: string
-  outputFolderName: string
-  enabled: boolean
-}
+  buildDuplicateRuleIdSet,
+  buildRuleValueLookup,
+  emptyRuleDraft,
+  filterRules,
+  formatDateTime,
+  groupRules,
+  type ConfirmState,
+  type DisplayPreview,
+  type NoticeState,
+  type RuleDraft
+} from './lib/app-helpers'
 
 const DEFAULT_SETTINGS: AppSettings = {
   lastSourceRoot: '',
@@ -77,7 +40,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
   windowLayout: {
     activeView: 'home',
-    activeTab: 'matched'
+    activeTab: 'matched',
+    rulesSearch: '',
+    ruleFilter: 'all',
+    ruleGroup: 'none'
   }
 }
 
@@ -86,1626 +52,859 @@ const DEFAULT_STATE: StoredState = {
   rules: []
 }
 
-const RULE_END_DROP_TARGET = '__rule-end-drop-target__'
-
-function emptyRuleDraft(): RuleDraft {
+function toDisplayPreview(runLog: RunLog): DisplayPreview {
   return {
-    name: '',
-    keywordsText: '',
-    outputFolderName: '',
-    enabled: true
+    generatedAt: runLog.finishedAt,
+    items: runLog.items,
+    summary: runLog.summary
   }
 }
 
-function normalizeRules(rules: RuleConfig[]) {
-  return [...rules]
-    .sort((left, right) => left.priority - right.priority)
-    .map((rule, index) => ({
-      ...rule,
-      priority: index + 1
-    }))
-}
-
-function parseKeywords(keywordsText: string) {
-  return keywordsText
-    .split(/[\n,，]+/)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-}
-
-function normalizeSuggestionValue(value: string) {
-  return value.trim().toLocaleLowerCase()
-}
-
-function buildRuleValueLookup(rules: RuleConfig[]) {
-  const values = new Set<string>()
-
-  for (const rule of rules) {
-    for (const candidate of [rule.name, rule.outputFolderName, ...rule.keywords]) {
-      const normalizedCandidate = normalizeSuggestionValue(candidate)
-      if (normalizedCandidate) {
-        values.add(normalizedCandidate)
-      }
-    }
-  }
-
-  return values
-}
-
-function formatDateTime(timestamp: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'short',
-    timeStyle: 'short'
-  }).format(new Date(timestamp))
-}
-
-function getNoticeClasses(tone: NoticeTone) {
-  switch (tone) {
-    case 'success':
-      return 'border-[#9be9a8] bg-success-subtle text-success'
-    case 'warning':
-      return 'border-[#d4a72c] bg-warning-subtle text-warning'
-    case 'danger':
-      return 'border-[#ff8182] bg-danger-subtle text-danger'
-    default:
-      return 'border-border-default bg-canvas-card text-fg-muted'
+function buildDraftFromRule(rule: RuleConfig): RuleDraft {
+  return {
+    id: rule.id,
+    name: rule.name,
+    keywordsText: rule.keywords.join(', '),
+    excludeKeywordsText: rule.excludeKeywords.join(', '),
+    extensionsText: rule.extensions.join(', '),
+    outputFolderName: rule.outputFolderName,
+    enabled: rule.enabled,
+    matchMode: rule.matchMode
   }
 }
 
-function getItemStatusBadge(item: PreviewItem) {
-  if (item.status === 'error') {
-    return <Badge variant="danger">错误</Badge>
-  }
-
-  if (item.status === 'unmatched') {
-    return <Badge variant="warning">未命中</Badge>
-  }
-
-  if (item.conflictResolution === 'auto-rename') {
-    return <Badge variant="accent">自动改名</Badge>
-  }
-
-  return <Badge variant="success">将移动</Badge>
-}
-
-function RuleEditorDialog({
-  draft,
-  onChange,
-  onOpenChange,
-  onSave,
-  open
-}: {
-  draft: RuleDraft
-  onChange: (draft: RuleDraft) => void
-  onOpenChange: (open: boolean) => void
-  onSave: () => void
-  open: boolean
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{draft.id ? '编辑规则' : '新增规则'}</DialogTitle>
-          <DialogDescription>
-            规则按优先级从上到下匹配，文件名包含任一关键词时即命中。
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 px-5 py-4">
-          <div className="space-y-2">
-            <Label htmlFor="rule-name">规则名称</Label>
-            <Input
-              id="rule-name"
-              placeholder="例如：合同、发票、简历"
-              value={draft.name}
-              onChange={(event) => onChange({ ...draft, name: event.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rule-keywords">关键词</Label>
-            <Textarea
-              id="rule-keywords"
-              placeholder="支持逗号、中文逗号或换行，例如：合同, agreement"
-              value={draft.keywordsText}
-              onChange={(event) => onChange({ ...draft, keywordsText: event.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="rule-folder">输出子文件夹</Label>
-            <Input
-              id="rule-folder"
-              placeholder="例如：合同"
-              value={draft.outputFolderName}
-              onChange={(event) => onChange({ ...draft, outputFolderName: event.target.value })}
-            />
-          </div>
-          <div className="flex items-center justify-between rounded-md border border-border-default bg-canvas-default px-3 py-2">
-            <div>
-              <p className="text-sm font-medium text-fg-default">启用规则</p>
-              <p className="text-sm text-fg-muted">关闭后不会参与预览和整理。</p>
-            </div>
-            <Switch
-              checked={draft.enabled}
-              onCheckedChange={(checked) => onChange({ ...draft, enabled: checked })}
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button variant="default" onClick={onSave}>
-            保存规则
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function ConfirmDialog({
-  confirmState,
-  confirming,
-  onConfirm,
-  onOpenChange
-}: {
-  confirmState: ConfirmState | null
-  confirming: boolean
-  onConfirm: () => void
-  onOpenChange: (open: boolean) => void
-}) {
-  return (
-    <Dialog open={Boolean(confirmState)} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{confirmState?.title}</DialogTitle>
-          <DialogDescription>{confirmState?.description}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={confirming}>
-            取消
-          </Button>
-          <Button
-            variant={confirmState?.confirmTone === 'danger' ? 'danger' : 'default'}
-            onClick={onConfirm}
-            disabled={confirming}
-          >
-            {confirming ? '处理中...' : confirmState?.confirmLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function DropPathField({
-  description,
-  label,
-  onClear,
-  onDropPath,
-  onPick,
-  value
-}: {
-  description: string
-  label: string
-  onClear: () => void
-  onDropPath: (targetPath: string) => void
-  onPick: () => void
-  value: string
-}) {
-  const [dragActive, setDragActive] = useState(false)
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <Label>{label}</Label>
-        <p className="text-xs text-fg-muted">{description}</p>
-      </div>
-      <div
-        className={cn(
-          'rounded-md border border-dashed border-border-default bg-canvas-card p-2 transition-colors',
-          dragActive && 'border-accent bg-accent-muted'
-        )}
-        onDragEnter={(event) => {
-          event.preventDefault()
-          setDragActive(true)
-        }}
-        onDragLeave={(event) => {
-          event.preventDefault()
-          if (event.currentTarget === event.target) {
-            setDragActive(false)
-          }
-        }}
-        onDragOver={(event) => {
-          event.preventDefault()
-          setDragActive(true)
-        }}
-        onDrop={(event) => {
-          event.preventDefault()
-          setDragActive(false)
-          const droppedItem = Array.from(event.dataTransfer.files).find(Boolean) as File & { path?: string }
-          if (droppedItem?.path) {
-            onDropPath(droppedItem.path)
-          }
-        }}
-      >
-        <div className="flex flex-col gap-2 md:flex-row">
-          <Input
-            readOnly
-            value={value}
-            placeholder="拖拽文件夹到这里，或点击右侧选择"
-            className="flex-1 bg-canvas-card text-code"
-          />
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={onPick}>
-              <FolderOpen className="h-4 w-4" />
-              选择
-            </Button>
-            <Button variant="ghost" onClick={onClear} disabled={!value}>
-              清空
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
+function isCancelledError(error: unknown) {
+  return error instanceof Error && error.message.includes('任务已取消')
 }
 
 export default function App() {
-  const [storedState, setStoredState] = useState<StoredState>(DEFAULT_STATE)
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [rules, setRules] = useState<RuleConfig[]>(DEFAULT_STATE.rules)
   const [history, setHistory] = useState<RunLog[]>([])
   const [preview, setPreview] = useState<DisplayPreview | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [previewing, setPreviewing] = useState(false)
-  const [executing, setExecuting] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [ruleDraft, setRuleDraft] = useState<RuleDraft>(emptyRuleDraft())
+  const [suggestionResult, setSuggestionResult] = useState<FieldSuggestionResult | null>(null)
+  const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set())
+  const [selectedRuleIds, setSelectedRuleIds] = useState<Set<string>>(new Set())
   const [notice, setNotice] = useState<NoticeState | null>(null)
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
-  const [confirmingAction, setConfirmingAction] = useState(false)
-  const [fieldSuggestions, setFieldSuggestions] = useState<FieldSuggestionResult | null>(null)
-  const [suggestingFields, setSuggestingFields] = useState(false)
-  const [selectedSuggestionValues, setSelectedSuggestionValues] = useState<string[]>([])
-  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([])
-  const [draggedRuleId, setDraggedRuleId] = useState<string | null>(null)
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
+  const [ruleDraft, setRuleDraft] = useState<RuleDraft>(emptyRuleDraft())
+  const [activeTask, setActiveTask] = useState<TaskProgressEvent | null>(null)
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [isBootstrapping, setIsBootstrapping] = useState(true)
+  const [draggingRuleId, setDraggingRuleId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
 
-  useEffect(() => {
-    let active = true
+  const sourceRoot = settings.lastSourceRoot
+  const outputRoot = settings.lastOutputRoot
 
-    const load = async () => {
-      try {
-        const payload = (await window.api.bootstrap()) as BootstrapPayload
-        if (!active) {
-          return
-        }
+  const duplicateRuleIds = useMemo(() => buildDuplicateRuleIdSet(rules), [rules])
+  const filteredRules = useMemo(
+    () => filterRules(rules, settings.windowLayout.rulesSearch, settings.windowLayout.ruleFilter, duplicateRuleIds),
+    [duplicateRuleIds, rules, settings.windowLayout.ruleFilter, settings.windowLayout.rulesSearch]
+  )
+  const groupedRules = useMemo(
+    () => groupRules(filteredRules, settings.windowLayout.ruleGroup),
+    [filteredRules, settings.windowLayout.ruleGroup]
+  )
+  const visibleRuleIds = useMemo(() => filteredRules.map((rule) => rule.id), [filteredRules])
+  const canCancelTask = activeTask?.state === 'running' && Boolean(activeTaskId)
 
-        setStoredState(payload.state)
-        setHistory(payload.history)
-      } catch (error) {
-        if (active) {
-          setNotice({
-            tone: 'danger',
-            message: error instanceof Error ? error.message : '初始化应用状态失败。'
-          })
-        }
-      } finally {
-        if (active) {
-          setLoading(false)
-        }
+  async function persistState(nextRules: RuleConfig[], nextSettings: AppSettings) {
+    const saved = await window.api.saveState({
+      settings: nextSettings,
+      rules: normalizeRules(nextRules)
+    })
+
+    setRules(saved.rules)
+    setSettings(saved.settings)
+    return saved
+  }
+
+  async function applySettings(partialSettings: Partial<AppSettings['windowLayout']> & Partial<AppSettings>) {
+    const nextSettings: AppSettings = {
+      ...settings,
+      ...partialSettings,
+      windowLayout: {
+        ...settings.windowLayout,
+        ...(partialSettings.windowLayout ?? partialSettings)
       }
     }
 
-    void load()
-
-    return () => {
-      active = false
-    }
-  }, [])
-
-  const rules = normalizeRules(storedState.rules)
-  const activeTab = storedState.settings.windowLayout.activeTab
-  const activeView = storedState.settings.windowLayout.activeView
-  const previewItems = preview?.items.filter((item) => item.status === activeTab) ?? []
-  const movedCount =
-    preview && 'moved' in preview.summary ? preview.summary.moved : preview?.summary.matched ?? 0
-  const suggestionItems = fieldSuggestions?.suggestions ?? []
-  const existingRuleValues = buildRuleValueLookup(rules)
-  const selectableSuggestionValues = suggestionItems
-    .map((suggestion) => normalizeSuggestionValue(suggestion.value))
-    .filter((value) => value && !existingRuleValues.has(value))
-  const selectedCreatableCount = selectedSuggestionValues.filter((value) => !existingRuleValues.has(value)).length
-  const selectedRuleCount = selectedRuleIds.length
-
-  async function persistState(nextState: StoredState) {
-    const normalizedState = {
-      ...nextState,
-      rules: normalizeRules(nextState.rules)
-    }
-    setStoredState(normalizedState)
-    await window.api.saveState(normalizedState)
+    await persistState(rules, nextSettings)
   }
 
-  async function updateSettings(patch: Partial<AppSettings>) {
-    await persistState({
-      ...storedState,
-      settings: {
-        ...storedState.settings,
-        ...patch,
-        windowLayout: {
-          ...storedState.settings.windowLayout,
-          ...patch.windowLayout
-        }
-      }
+  async function runWithTask<T>(kind: 'suggest' | 'preview' | 'run' | 'undo', runner: (taskId: string) => Promise<T>) {
+    const taskId = crypto.randomUUID()
+    setActiveTaskId(taskId)
+    setActiveTask({
+      taskId,
+      kind,
+      phase: 'queued',
+      state: 'running',
+      message: '正在准备任务…',
+      processed: 0
     })
-  }
 
-  async function replaceRules(nextRules: RuleConfig[], nextNotice?: NoticeState) {
-    setPreview(null)
-    if (nextNotice) {
-      setNotice(nextNotice)
-    }
-
-    await persistState({
-      ...storedState,
-      rules: nextRules
-    })
-  }
-
-  async function handleConfirmAction() {
-    if (!confirmState) {
-      return
-    }
-
-    setConfirmingAction(true)
     try {
-      await confirmState.onConfirm()
-      setConfirmState(null)
+      return await runner(taskId)
     } finally {
-      setConfirmingAction(false)
+      setActiveTaskId((currentTaskId) => (currentTaskId === taskId ? null : currentTaskId))
     }
   }
 
-  useEffect(() => {
-    const sourceRoot = storedState.settings.lastSourceRoot
-    if (!sourceRoot) {
-      setFieldSuggestions(null)
-      setSelectedSuggestionValues([])
-      setSuggestingFields(false)
+  async function refreshSuggestions(nextSourceRoot = sourceRoot, nextOutputRoot = outputRoot) {
+    if (!nextSourceRoot) {
+      setSuggestionResult(null)
+      setSelectedSuggestions(new Set())
       return
     }
 
-    let active = true
-
-    const loadFieldSuggestions = async () => {
-      setSuggestingFields(true)
-
-      try {
-        const result = await window.api.suggestFields({
-          sourceRoot,
-          outputRoot: storedState.settings.lastOutputRoot || undefined,
-          rules: storedState.rules,
-          maxResults: 12
+    try {
+      const result = await runWithTask('suggest', (taskId) =>
+        window.api.suggestFields({
+          sourceRoot: nextSourceRoot,
+          outputRoot: nextOutputRoot,
+          rules,
+          maxResults: 18,
+          taskId
         })
-
-        if (!active) {
-          return
-        }
-
-        setFieldSuggestions(result)
-      } catch (error) {
-        if (!active) {
-          return
-        }
-
-        setFieldSuggestions(null)
-        setSelectedSuggestionValues([])
+      )
+      setSuggestionResult(result)
+      const allowedValues = new Set(result.suggestions.map((suggestion) => suggestion.value))
+      setSelectedSuggestions((current) => new Set([...current].filter((value) => allowedValues.has(value))))
+    } catch (error) {
+      if (!isCancelledError(error)) {
         setNotice({
           tone: 'danger',
-          message: error instanceof Error ? error.message : '统计高频字段失败。'
+          message: error instanceof Error ? error.message : '字段分析失败。'
         })
-      } finally {
-        if (active) {
-          setSuggestingFields(false)
-        }
       }
     }
-
-    void loadFieldSuggestions()
-
-    return () => {
-      active = false
-    }
-  }, [
-    storedState.rules,
-    storedState.settings.lastOutputRoot,
-    storedState.settings.lastSourceRoot
-  ])
+  }
 
   useEffect(() => {
-    const availableValues = new Set(
-      suggestionItems
-        .map((suggestion) => normalizeSuggestionValue(suggestion.value))
-        .filter((value) => value && !existingRuleValues.has(value))
-    )
+    const unsubscribe = window.api.onTaskProgress((event) => {
+      setActiveTask(event)
+      if (event.state !== 'running') {
+        setActiveTaskId(null)
+      }
+    })
 
-    setSelectedSuggestionValues((current) => current.filter((value) => availableValues.has(value)))
-  }, [suggestionItems, storedState.rules])
+    void (async () => {
+      const payload: BootstrapPayload = await window.api.bootstrap()
+      setRules(payload.state.rules)
+      setSettings(payload.state.settings)
+      setHistory(payload.history)
+      setIsBootstrapping(false)
+
+      if (payload.state.settings.lastSourceRoot) {
+        await refreshSuggestions(
+          payload.state.settings.lastSourceRoot,
+          payload.state.settings.lastOutputRoot
+        )
+      }
+    })()
+
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
-    const knownRuleIds = new Set(rules.map((rule) => rule.id))
-    setSelectedRuleIds((current) => current.filter((ruleId) => knownRuleIds.has(ruleId)))
-  }, [storedState.rules])
+    setSelectedRuleIds((current) => new Set([...current].filter((ruleId) => rules.some((rule) => rule.id === ruleId))))
+  }, [rules])
 
-  async function setActiveView(nextView: AppView) {
-    await updateSettings({
-      windowLayout: {
-        activeView: nextView,
-        activeTab
-      }
-    })
-  }
-
-  async function setActiveTab(nextTab: PreviewTab) {
-    await updateSettings({
-      windowLayout: {
-        activeView,
-        activeTab: nextTab
-      }
-    })
-  }
-
-  async function handlePickFolder(kind: 'source' | 'output') {
-    const selectedPath = await window.api.pickFolder()
-    if (!selectedPath) {
-      return
-    }
-
-    setPreview(null)
-    if (kind === 'source') {
-      await updateSettings({ lastSourceRoot: selectedPath })
-      return
-    }
-
-    await updateSettings({ lastOutputRoot: selectedPath })
-  }
-
-  async function handleDroppedPath(kind: 'source' | 'output', targetPath: string) {
-    const inspection = await window.api.inspectPath(targetPath)
-    if (!inspection.exists || !inspection.isDirectory) {
-      setNotice({
-        tone: 'warning',
-        message: '拖入的对象不是有效目录，请重新选择文件夹。'
-      })
-      return
-    }
-
-    setPreview(null)
-    if (kind === 'source') {
-      await updateSettings({ lastSourceRoot: inspection.path })
-      return
-    }
-
-    await updateSettings({ lastOutputRoot: inspection.path })
-  }
-
-  function openCreateRuleDialog() {
-    setRuleDraft(emptyRuleDraft())
-    setDialogOpen(true)
-  }
-
-  function openEditRuleDialog(rule: RuleConfig) {
-    setRuleDraft({
-      id: rule.id,
-      name: rule.name,
-      keywordsText: rule.keywords.join(', '),
-      outputFolderName: rule.outputFolderName,
-      enabled: rule.enabled
-    })
-    setDialogOpen(true)
-  }
-
-  async function handleSaveRule() {
-    const keywords = parseKeywords(ruleDraft.keywordsText)
-    if (!ruleDraft.name.trim() || !ruleDraft.outputFolderName.trim() || keywords.length === 0) {
-      setNotice({
-        tone: 'warning',
-        message: '规则名称、关键词和输出子文件夹不能为空。'
-      })
-      return
-    }
-
-    const nextRules = [...rules]
-    if (ruleDraft.id) {
-      const index = nextRules.findIndex((rule) => rule.id === ruleDraft.id)
-      if (index < 0) {
-        return
-      }
-
-      const currentRule = nextRules[index]
-      if (!currentRule) {
-        return
-      }
-
-      nextRules[index] = {
-        ...currentRule,
-        name: ruleDraft.name.trim(),
-        keywords,
-        outputFolderName: ruleDraft.outputFolderName.trim(),
-        enabled: ruleDraft.enabled
-      }
-    } else {
-      nextRules.push({
-        id: crypto.randomUUID(),
-        name: ruleDraft.name.trim(),
-        keywords,
-        outputFolderName: ruleDraft.outputFolderName.trim(),
-        enabled: ruleDraft.enabled,
-        priority: nextRules.length + 1
-      })
-    }
-
-    setDialogOpen(false)
-    await replaceRules(nextRules, {
-      tone: 'success',
-      message: ruleDraft.id ? '规则已更新。' : '规则已新增。'
-    })
-  }
-
-  async function toggleRule(ruleId: string, enabled: boolean) {
-    await replaceRules(
-      rules.map((rule) => (rule.id === ruleId ? { ...rule, enabled } : rule))
-    )
-  }
-
-  async function deleteRule(ruleId: string) {
-    await replaceRules(
-      rules.filter((rule) => rule.id !== ruleId),
-      {
-        tone: 'success',
-        message: '规则已删除。'
-      }
-    )
-  }
-
-  function toggleRuleSelection(ruleId: string, checked: boolean) {
-    setSelectedRuleIds((current) => {
-      if (checked) {
-        return current.includes(ruleId) ? current : [...current, ruleId]
-      }
-
-      return current.filter((id) => id !== ruleId)
-    })
-  }
-
-  function selectAllRules() {
-    setSelectedRuleIds(rules.map((rule) => rule.id))
-  }
-
-  function clearRuleSelection() {
-    setSelectedRuleIds([])
-  }
-
-  function confirmDeleteRule(rule: RuleConfig) {
-    setConfirmState({
-      title: '删除这条规则？',
-      description: `规则“${rule.name}”删除后将不再参与预览和整理。`,
-      confirmLabel: '确认删除',
-      confirmTone: 'danger',
-      onConfirm: async () => {
-        await deleteRule(rule.id)
-      }
-    })
-  }
-
-  async function applySelectedRulesEnabled(enabled: boolean) {
-    if (selectedRuleIds.length === 0) {
-      return
-    }
-
-    await replaceRules(
-      rules.map((rule) => (selectedRuleIds.includes(rule.id) ? { ...rule, enabled } : rule)),
-      {
-        tone: 'success',
-        message: enabled ? '已启用选中规则。' : '已停用选中规则。'
-      }
-    )
-  }
-
-  function confirmSelectedRulesEnabled(enabled: boolean) {
-    if (selectedRuleIds.length === 0) {
-      return
-    }
-
-    setConfirmState({
-      title: enabled ? '批量启用选中规则？' : '批量停用选中规则？',
-      description: `将更新 ${selectedRuleIds.length} 条规则的启用状态。`,
-      confirmLabel: enabled ? '确认启用' : '确认停用',
-      confirmTone: 'default',
-      onConfirm: async () => {
-        await applySelectedRulesEnabled(enabled)
-      }
-    })
-  }
-
-  async function applyDeleteSelectedRules() {
-    if (selectedRuleIds.length === 0) {
-      return
-    }
-
-    await replaceRules(
-      rules.filter((rule) => !selectedRuleIds.includes(rule.id)),
-      {
-        tone: 'success',
-        message: `已删除 ${selectedRuleIds.length} 条规则。`
-      }
-    )
-    setSelectedRuleIds([])
-  }
-
-  function confirmDeleteSelectedRules() {
-    if (selectedRuleIds.length === 0) {
-      return
-    }
-
-    setConfirmState({
-      title: '批量删除选中规则？',
-      description: `将删除 ${selectedRuleIds.length} 条规则，这一步无法自动撤销。`,
-      confirmLabel: '确认删除',
-      confirmTone: 'danger',
-      onConfirm: async () => {
-        await applyDeleteSelectedRules()
-      }
-    })
-  }
-
-  async function reorderRules(dragRuleId: string, targetRuleId: string) {
-    if (!dragRuleId || dragRuleId === targetRuleId) {
-      return
-    }
-
-    const fromIndex = rules.findIndex((rule) => rule.id === dragRuleId)
-    const targetIndex = rules.findIndex((rule) => rule.id === targetRuleId)
-    if (fromIndex < 0 || targetIndex < 0) {
-      return
-    }
-
-    const nextRules = [...rules]
-    const [draggedRule] = nextRules.splice(fromIndex, 1)
-    if (!draggedRule) {
-      return
-    }
-
-    const insertIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex
-    nextRules.splice(insertIndex, 0, draggedRule)
-    await replaceRules(nextRules, {
-      tone: 'success',
-      message: '规则顺序已更新。'
-    })
-  }
-
-  async function moveRuleToEnd(ruleId: string) {
-    const fromIndex = rules.findIndex((rule) => rule.id === ruleId)
-    if (fromIndex < 0 || fromIndex === rules.length - 1) {
-      return
-    }
-
-    const nextRules = [...rules]
-    const [draggedRule] = nextRules.splice(fromIndex, 1)
-    if (!draggedRule) {
-      return
-    }
-
-    nextRules.push(draggedRule)
-    await replaceRules(nextRules, {
-      tone: 'success',
-      message: '规则顺序已更新。'
-    })
-  }
-
-  function toggleSuggestionSelection(value: string, checked: boolean) {
-    const normalizedValue = normalizeSuggestionValue(value)
-    if (!normalizedValue) {
-      return
-    }
-
-    setSelectedSuggestionValues((current) => {
-      if (checked) {
-        return current.includes(normalizedValue) ? current : [...current, normalizedValue]
-      }
-
-      return current.filter((entry) => entry !== normalizedValue)
-    })
-  }
-
-  async function addRulesFromSuggestions(values: string[]) {
-    const nextRules = [...rules]
-    const knownValues = buildRuleValueLookup(nextRules)
-    const createdValues: string[] = []
-    const skippedValues: string[] = []
-
-    for (const rawValue of values) {
-      const trimmedValue = rawValue.trim()
-      const normalizedValue = normalizeSuggestionValue(trimmedValue)
-
-      if (!normalizedValue || knownValues.has(normalizedValue)) {
-        if (trimmedValue) {
-          skippedValues.push(trimmedValue)
-        }
-        continue
-      }
-
-      nextRules.push({
-        id: crypto.randomUUID(),
-        name: trimmedValue,
-        keywords: [trimmedValue],
-        outputFolderName: trimmedValue,
-        enabled: true,
-        priority: nextRules.length + 1
-      })
-      knownValues.add(normalizedValue)
-      createdValues.push(trimmedValue)
-    }
-
-    if (createdValues.length === 0) {
-      setNotice({
-        tone: 'warning',
-        message: '所选字段已经存在于当前规则中。'
-      })
-      return
-    }
-
-    setSelectedSuggestionValues((current) =>
-      current.filter((value) => !createdValues.some((createdValue) => normalizeSuggestionValue(createdValue) === value))
-    )
-    await replaceRules(nextRules, {
-      tone: skippedValues.length > 0 ? 'warning' : 'success',
-      message:
-        skippedValues.length > 0
-          ? `已根据 ${createdValues.length} 个字段生成规则，${skippedValues.length} 个重复字段已跳过。`
-          : `已根据 ${createdValues.length} 个字段生成规则。`
-    })
-  }
-
-  function validateRunInputs() {
-    if (!storedState.settings.lastSourceRoot || !storedState.settings.lastOutputRoot) {
-      setNotice({
-        tone: 'warning',
-        message: '请先选择源目录和输出根目录。'
-      })
+  async function validateRoots() {
+    if (!sourceRoot) {
+      setNotice({ tone: 'warning', message: '请先选择源目录。' })
       return false
     }
 
-    if (rules.length === 0) {
-      setNotice({
-        tone: 'warning',
-        message: '请至少添加一条规则后再预览整理。'
-      })
+    if (!outputRoot) {
+      setNotice({ tone: 'warning', message: '请先选择输出根目录。' })
+      return false
+    }
+
+    const [sourceInfo, outputInfo] = await Promise.all([
+      window.api.inspectPath(sourceRoot),
+      window.api.inspectPath(outputRoot)
+    ])
+
+    if (!sourceInfo.exists || !sourceInfo.isDirectory) {
+      setNotice({ tone: 'danger', message: '源目录不存在，或不是有效文件夹。' })
+      return false
+    }
+
+    if (outputInfo.exists && !outputInfo.isDirectory) {
+      setNotice({ tone: 'danger', message: '输出根目录不是有效文件夹。' })
       return false
     }
 
     return true
   }
 
-  async function runPreview() {
-    if (!validateRunInputs()) {
+  async function handlePickSource() {
+    const picked = await window.api.pickFolder()
+    if (!picked) {
       return
     }
 
-    setPreviewing(true)
-    try {
-      const result = await window.api.generatePreview({
-        sourceRoot: storedState.settings.lastSourceRoot,
-        outputRoot: storedState.settings.lastOutputRoot,
-        rules
-      })
-
-      setPreview(result)
-      const nextTab =
-        result.summary.matched > 0
-          ? 'matched'
-          : result.summary.unmatched > 0
-            ? 'unmatched'
-            : 'error'
-
-      await setActiveTab(nextTab)
-      setNotice({
-        tone: result.summary.matched > 0 ? 'success' : 'warning',
-        message:
-          result.summary.matched > 0
-            ? `预览完成，共有 ${result.summary.matched} 个文件将被整理。`
-            : '预览完成，但当前没有命中任何规则的文件。'
-      })
-    } catch (error) {
-      setNotice({
-        tone: 'danger',
-        message: error instanceof Error ? error.message : '预览整理失败。'
-      })
-    } finally {
-      setPreviewing(false)
+    const nextSettings: AppSettings = {
+      ...settings,
+      lastSourceRoot: picked
     }
+
+    await persistState(rules, nextSettings)
+    setPreview(null)
+    setNotice({ tone: 'neutral', message: '源目录已更新，正在重新分析字段建议。' })
+    await refreshSuggestions(picked, nextSettings.lastOutputRoot)
   }
 
-  async function executeRun() {
-    if (!preview) {
-      setNotice({
-        tone: 'warning',
-        message: '请先完成一次预览，再执行整理。'
-      })
+  async function handlePickOutput() {
+    const picked = await window.api.pickFolder()
+    if (!picked) {
       return
     }
 
-    setExecuting(true)
-    try {
-      const runLog = await window.api.executeRun({
-        sourceRoot: storedState.settings.lastSourceRoot,
-        outputRoot: storedState.settings.lastOutputRoot,
-        rules
-      })
+    const nextSettings: AppSettings = {
+      ...settings,
+      lastOutputRoot: picked
+    }
 
-      setHistory((current) => [runLog, ...current].slice(0, 20))
-      setPreview({
-        generatedAt: runLog.finishedAt,
-        items: runLog.items,
-        summary: runLog.summary
-      })
-      const nextTab = runLog.summary.errors > 0 ? 'error' : runLog.summary.moved > 0 ? 'matched' : 'unmatched'
-      await setActiveTab(nextTab)
-      setNotice({
-        tone: runLog.summary.errors > 0 ? 'warning' : 'success',
-        message:
-          runLog.summary.errors > 0
-            ? `整理完成，但有 ${runLog.summary.errors} 个文件失败。`
-            : `整理完成，已成功处理 ${runLog.summary.moved} 个文件。`
-      })
-    } catch (error) {
-      setNotice({
-        tone: 'danger',
-        message: error instanceof Error ? error.message : '执行整理失败。'
-      })
-    } finally {
-      setExecuting(false)
+    await persistState(rules, nextSettings)
+    setPreview(null)
+    setNotice({ tone: 'neutral', message: '输出根目录已更新。' })
+    if (sourceRoot) {
+      await refreshSuggestions(sourceRoot, picked)
     }
   }
 
-  function renderFieldSuggestionsCard() {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>字段建议</CardTitle>
-          <CardDescription>
-            {storedState.settings.lastSourceRoot
-              ? fieldSuggestions
-                ? `基于 ${fieldSuggestions.scannedFileCount} 个文件统计高频字段，可直接生成规则。`
-                : '选择源目录后自动统计文件名里出现次数较多的字段。'
-              : '先选择源目录，再根据高频字段快速生成规则。'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setSelectedSuggestionValues([...new Set(selectableSuggestionValues)])}
-              disabled={suggestingFields || selectableSuggestionValues.length === 0}
-            >
-              全选可用
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() =>
-                void addRulesFromSuggestions(
-                  suggestionItems
-                    .filter((suggestion) =>
-                      selectedSuggestionValues.includes(normalizeSuggestionValue(suggestion.value))
-                    )
-                    .map((suggestion) => suggestion.value)
-                )
-              }
-              disabled={suggestingFields || selectedCreatableCount === 0}
-            >
-              生成选中规则
-            </Button>
-          </div>
+  function openCreateRuleDialog() {
+    setRuleDraft(emptyRuleDraft())
+    setRuleDialogOpen(true)
+  }
 
-          {!storedState.settings.lastSourceRoot ? (
-            <div className="rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-6 text-sm text-fg-muted">
-              选择源目录后，系统会按文件名分隔字段做频次统计，并过滤纯数字这类噪声字段。
-            </div>
-          ) : suggestingFields ? (
-            <div className="rounded-md border border-border-default bg-canvas-default px-4 py-6 text-sm text-fg-muted">
-              正在统计高频字段...
-            </div>
-          ) : suggestionItems.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-6 text-sm text-fg-muted">
-              当前没有统计出重复字段。可以换一个源目录，或先检查文件名里是否有统一的分隔字段。
-            </div>
-          ) : (
-            suggestionItems.map((suggestion) => {
-              const normalizedValue = normalizeSuggestionValue(suggestion.value)
-              const exists = existingRuleValues.has(normalizedValue)
+  function openEditRuleDialog(rule: RuleConfig) {
+    setRuleDraft(buildDraftFromRule(rule))
+    setRuleDialogOpen(true)
+  }
 
-              return (
-                <div key={suggestion.value} className="rounded-md border border-border-default bg-canvas-card p-3">
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 h-4 w-4 rounded border-border-default text-accent accent-[#0969da]"
-                      checked={selectedSuggestionValues.includes(normalizedValue)}
-                      disabled={exists}
-                      onChange={(event) => toggleSuggestionSelection(suggestion.value, event.target.checked)}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-fg-default">{suggestion.value}</p>
-                        <Badge variant="neutral">{suggestion.count} 次</Badge>
-                        {exists ? <Badge variant="success">已存在</Badge> : null}
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-fg-muted">
-                        示例文件：<span className="text-code">{suggestion.sampleFileName}</span>
-                      </p>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={exists}
-                      onClick={() => void addRulesFromSuggestions([suggestion.value])}
-                    >
-                      生成规则
-                    </Button>
-                  </div>
-                </div>
+  async function handleSaveRule() {
+    const keywords = parseRuleKeywords(ruleDraft.keywordsText)
+    const excludeKeywords = parseRuleKeywords(ruleDraft.excludeKeywordsText)
+    const extensions = parseRuleExtensions(ruleDraft.extensionsText)
+
+    if (!ruleDraft.name.trim()) {
+      setNotice({ tone: 'warning', message: '请输入规则名称。' })
+      return
+    }
+
+    if (!ruleDraft.outputFolderName.trim()) {
+      setNotice({ tone: 'warning', message: '请输入输出子文件夹名称。' })
+      return
+    }
+
+    if (keywords.length === 0) {
+      setNotice({ tone: 'warning', message: '至少需要一个包含关键词。' })
+      return
+    }
+
+    const nextRules = ruleDraft.id
+      ? rules.map((rule) =>
+          rule.id === ruleDraft.id
+            ? normalizeRule(
+                {
+                  ...rule,
+                  name: ruleDraft.name,
+                  keywords,
+                  excludeKeywords,
+                  extensions,
+                  outputFolderName: ruleDraft.outputFolderName,
+                  enabled: ruleDraft.enabled,
+                  matchMode: ruleDraft.matchMode
+                },
+                rule.priority
               )
-            })
-          )}
-        </CardContent>
-      </Card>
-    )
+            : rule
+        )
+      : [
+          ...rules,
+          normalizeRule(
+            {
+              id: crypto.randomUUID(),
+              name: ruleDraft.name,
+              keywords,
+              excludeKeywords,
+              extensions,
+              outputFolderName: ruleDraft.outputFolderName,
+              enabled: ruleDraft.enabled,
+              matchMode: ruleDraft.matchMode
+            },
+            rules.length + 1
+          )
+        ]
+
+    await persistState(nextRules, settings)
+    setRuleDialogOpen(false)
+    setRuleDraft(emptyRuleDraft())
+    setNotice({ tone: 'success', message: ruleDraft.id ? '规则已更新。' : '规则已创建。' })
   }
 
-  function renderPreviewCard() {
-    return (
-      <Card>
-        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <CardTitle>预览结果</CardTitle>
-            <CardDescription>
-              {preview
-                ? `最近生成时间：${formatDateTime(preview.generatedAt)}`
-                : '还没有预览结果。点击上方“预览整理”开始。'}
-            </CardDescription>
-          </div>
-          <Tabs value={activeTab} onValueChange={(value) => void setActiveTab(value as PreviewTab)}>
-            <TabsList>
-              <TabsTrigger value="matched">将移动 {preview?.summary.matched ?? 0}</TabsTrigger>
-              <TabsTrigger value="unmatched">未命中 {preview?.summary.unmatched ?? 0}</TabsTrigger>
-              <TabsTrigger value="error">错误 {preview?.summary.errors ?? 0}</TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </CardHeader>
-        <CardContent className="p-0">
-          {!preview ? (
-            <div className="flex flex-col items-center gap-3 px-6 py-16 text-center text-fg-muted">
-              <FileWarning className="h-10 w-10 text-fg-subtle" />
-              <div>
-                <p className="text-base font-medium text-fg-default">还没有预览结果</p>
-                <p className="mt-1 text-sm">先生成预览，系统会列出命中文件、未命中文件和失败原因。</p>
-              </div>
-            </div>
-          ) : previewItems.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 px-6 py-16 text-center text-fg-muted">
-              {activeTab === 'matched' ? (
-                <CheckCircle2 className="h-10 w-10 text-success" />
-              ) : activeTab === 'unmatched' ? (
-                <FileWarning className="h-10 w-10 text-warning" />
-              ) : (
-                <XCircle className="h-10 w-10 text-danger" />
-              )}
-              <div>
-                <p className="text-base font-medium text-fg-default">当前标签下没有记录</p>
-                <p className="mt-1 text-sm">可以切换到其他标签查看本次预览的不同结果。</p>
-              </div>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full border-t border-border-muted text-left text-sm">
-                <thead className="bg-canvas-default text-fg-muted">
-                  <tr>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">文件名</th>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">来源路径</th>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">命中规则</th>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">目标目录</th>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">最终文件名</th>
-                    <th className="whitespace-nowrap px-4 py-3 font-medium">状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewItems.map((item) => (
-                    <tr
-                      key={`${item.sourcePath}-${item.targetPath ?? item.status}`}
-                      className="border-t border-border-muted align-top hover:bg-canvas-default"
-                    >
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-fg-default">{item.fileName}</p>
-                        {item.message ? (
-                          <p className="mt-1 max-w-xs text-xs leading-5 text-fg-muted">{item.message}</p>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-code text-fg-muted">{item.sourcePath}</td>
-                      <td className="px-4 py-3 text-fg-default">{item.matchedRuleName ?? '未命中'}</td>
-                      <td className="px-4 py-3 text-code text-fg-muted">
-                        {item.targetPath ? item.targetPath.replace(item.finalTargetFileName ?? '', '') : '保持原地'}
-                      </td>
-                      <td className="px-4 py-3 text-code text-fg-default">{item.finalTargetFileName ?? '-'}</td>
-                      <td className="px-4 py-3">{getItemStatusBadge(item)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    )
+  function requestConfirmation(nextState: ConfirmState) {
+    setConfirmState({
+      ...nextState,
+      onConfirm: async () => {
+        setConfirmState(null)
+        await nextState.onConfirm()
+      }
+    })
   }
 
-  function renderHistoryCard() {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>最近任务日志</CardTitle>
-          <CardDescription>记录最近 20 次整理结果，便于回查失败原因。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {history.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-6 text-sm text-fg-muted">
-              还没有执行记录。完成一次整理后，日志会显示在这里。
-            </div>
-          ) : (
-            history.slice(0, 6).map((entry) => (
-              <div
-                key={entry.runId}
-                className="rounded-md border border-border-default bg-canvas-default px-4 py-3"
-              >
-                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-fg-default">{formatDateTime(entry.finishedAt)}</p>
-                    <p className="mt-1 text-code text-fg-subtle">{entry.sourceRoot}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge variant="success">已移动 {entry.summary.moved}</Badge>
-                    <Badge variant="warning">未命中 {entry.summary.unmatched}</Badge>
-                    <Badge variant={entry.summary.errors > 0 ? 'danger' : 'neutral'}>
-                      错误 {entry.summary.errors}
-                    </Badge>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-    )
+  async function handleDeleteRule(rule: RuleConfig) {
+    requestConfirmation({
+      title: '删除规则',
+      description: `删除后，“${rule.name}” 将不再参与预览和整理。`,
+      confirmLabel: '确认删除',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        const nextRules = rules.filter((entry) => entry.id !== rule.id)
+        await persistState(nextRules, settings)
+        setNotice({ tone: 'success', message: `已删除规则“${rule.name}”。` })
+      }
+    })
   }
 
-  function renderHomeGuidanceCard() {
-    if (!storedState.settings.lastSourceRoot) {
-      return (
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-fg-default">先选择源目录</p>
-              <p className="mt-1 text-sm text-fg-muted">选择后系统才会统计高频字段，并准备扫描文件。</p>
-            </div>
-            <Button variant="outline" onClick={() => void handlePickFolder('source')}>
-              <FolderOpen className="h-4 w-4" />
-              选择源目录
-            </Button>
-          </CardContent>
-        </Card>
-      )
+  async function handleToggleRuleEnabled(ruleId: string) {
+    const nextRules = rules.map((rule) => (rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule))
+    await persistState(nextRules, settings)
+  }
+
+  function handleToggleRuleSelection(ruleId: string) {
+    setSelectedRuleIds((current) => {
+      const next = new Set(current)
+      if (next.has(ruleId)) {
+        next.delete(ruleId)
+      } else {
+        next.add(ruleId)
+      }
+      return next
+    })
+  }
+
+  async function handleBatchEnable() {
+    const nextRules = rules.map((rule) =>
+      selectedRuleIds.has(rule.id)
+        ? {
+            ...rule,
+            enabled: true
+          }
+        : rule
+    )
+    await persistState(nextRules, settings)
+    setNotice({ tone: 'success', message: '选中的规则已启用。' })
+  }
+
+  async function handleBatchDisable() {
+    const nextRules = rules.map((rule) =>
+      selectedRuleIds.has(rule.id)
+        ? {
+            ...rule,
+            enabled: false
+          }
+        : rule
+    )
+    await persistState(nextRules, settings)
+    setNotice({ tone: 'success', message: '选中的规则已停用。' })
+  }
+
+  function handleBatchDelete() {
+    if (selectedRuleIds.size === 0) {
+      return
     }
 
-    if (!storedState.settings.lastOutputRoot) {
-      return (
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-fg-default">再补充输出根目录</p>
-              <p className="mt-1 text-sm text-fg-muted">输出根目录决定分类后的目标位置，建议在预览前先固定好。</p>
-            </div>
-            <Button variant="outline" onClick={() => void handlePickFolder('output')}>
-              <FolderOpen className="h-4 w-4" />
-              选择输出目录
-            </Button>
-          </CardContent>
-        </Card>
-      )
+    requestConfirmation({
+      title: '批量删除规则',
+      description: `将删除 ${selectedRuleIds.size} 条规则。此操作不会删除任何文件，只会移除规则配置。`,
+      confirmLabel: '确认删除',
+      confirmTone: 'danger',
+      onConfirm: async () => {
+        const nextRules = rules.filter((rule) => !selectedRuleIds.has(rule.id))
+        await persistState(nextRules, settings)
+        setSelectedRuleIds(new Set())
+        setNotice({ tone: 'success', message: '选中的规则已删除。' })
+      }
+    })
+  }
+
+  function handleSelectAllVisible() {
+    setSelectedRuleIds(new Set(visibleRuleIds))
+  }
+
+  async function handleImportRules() {
+    try {
+      const importedRules = await window.api.importRules()
+      if (!importedRules || importedRules.length === 0) {
+        return
+      }
+
+      const nextRules = normalizeRules([...rules, ...importedRules.map((rule, index) => ({ ...rule, id: `${rule.id}-${index}-${crypto.randomUUID()}` }))])
+      await persistState(nextRules, settings)
+      setNotice({ tone: 'success', message: `已导入 ${importedRules.length} 条规则。` })
+    } catch (error) {
+      setNotice({ tone: 'danger', message: error instanceof Error ? error.message : '导入规则失败。' })
+    }
+  }
+
+  async function handleExportRules() {
+    try {
+      const exportedPath = await window.api.exportRules(rules)
+      if (!exportedPath) {
+        return
+      }
+
+      setNotice({ tone: 'success', message: `规则已导出到 ${exportedPath}` })
+    } catch (error) {
+      setNotice({ tone: 'danger', message: error instanceof Error ? error.message : '导出规则失败。' })
+    }
+  }
+
+  function handleToggleSuggestion(value: string) {
+    setSelectedSuggestions((current) => {
+      const next = new Set(current)
+      if (next.has(value)) {
+        next.delete(value)
+      } else {
+        next.add(value)
+      }
+      return next
+    })
+  }
+
+  async function handleCreateRulesFromSuggestions(openRulesPage: boolean) {
+    if (!suggestionResult) {
+      return
     }
 
-    if (rules.length === 0) {
-      return (
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-fg-default">还没有规则</p>
-              <p className="mt-1 text-sm text-fg-muted">可以直接用右侧字段建议生成规则，或去规则管理页手动整理优先级。</p>
-            </div>
-            <Button variant="outline" onClick={() => void setActiveView('rules')}>
-              前往规则管理
-            </Button>
-          </CardContent>
-        </Card>
+    const existingValues = buildRuleValueLookup(rules)
+    const selectedValues = suggestionResult.suggestions
+      .filter((suggestion) => selectedSuggestions.has(suggestion.value))
+      .map((suggestion) => suggestion.value)
+      .filter((value) => !existingValues.has(value.toLocaleLowerCase()))
+
+    if (selectedValues.length === 0) {
+      setNotice({ tone: 'warning', message: '所选字段已存在于规则中，或当前没有选中任何建议。' })
+      return
+    }
+
+    const nextRules = normalizeRules([
+      ...rules,
+      ...selectedValues.map((value, index) => createRuleFromSuggestion(value, rules.length + index + 1))
+    ])
+    const nextSettings: AppSettings = openRulesPage
+      ? {
+          ...settings,
+          windowLayout: {
+            ...settings.windowLayout,
+            activeView: 'rules',
+            rulesSearch: ''
+          }
+        }
+      : settings
+
+    await persistState(nextRules, nextSettings)
+    setSelectedRuleIds(new Set(nextRules.slice(-selectedValues.length).map((rule) => rule.id)))
+    setSelectedSuggestions(new Set())
+    setNotice({ tone: 'success', message: `已根据建议生成 ${selectedValues.length} 条规则。` })
+  }
+
+  async function handleGeneratePreview() {
+    if (!(await validateRoots())) {
+      return
+    }
+
+    if (!rules.some((rule) => rule.enabled)) {
+      setNotice({ tone: 'warning', message: '至少需要一条启用中的规则。' })
+      return
+    }
+
+    try {
+      const result = await runWithTask('preview', (taskId) =>
+        window.api.generatePreview({
+          sourceRoot,
+          outputRoot,
+          rules,
+          taskId
+        })
       )
+
+      setPreview({
+        generatedAt: result.generatedAt,
+        items: result.items,
+        summary: result.summary
+      })
+      await applySettings({
+        windowLayout: {
+          ...settings.windowLayout,
+          activeTab: 'matched'
+        }
+      })
+      setNotice({ tone: 'success', message: `预览已生成，共 ${result.summary.total} 个文件。` })
+    } catch (error) {
+      if (!isCancelledError(error)) {
+        setNotice({ tone: 'danger', message: error instanceof Error ? error.message : '预览生成失败。' })
+      }
+    }
+  }
+
+  async function handleExecute() {
+    if (!(await validateRoots())) {
+      return
     }
 
     if (!preview) {
-      return (
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-fg-default">可以开始生成预览计划</p>
-              <p className="mt-1 text-sm text-fg-muted">目录和规则都已准备好，建议先确认将发生什么，再执行整理。</p>
-            </div>
-            <Button variant="default" onClick={runPreview} disabled={previewing || executing}>
-              <RefreshCcw className={cn('h-4 w-4', previewing && 'animate-spin')} />
-              生成预览计划
-            </Button>
-          </CardContent>
-        </Card>
-      )
+      await handleGeneratePreview()
+      return
     }
 
-    return (
-      <Card>
-        <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold text-fg-default">预览已就绪</p>
-            <p className="mt-1 text-sm text-fg-muted">确认结果表里的命中和重命名都符合预期后，再开始整理。</p>
-          </div>
-          <Button variant="secondary" onClick={executeRun} disabled={previewing || executing}>
-            <Play className="h-4 w-4" />
-            确认后开始整理
-          </Button>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  function renderHomePage() {
-    return (
-      <div className="space-y-5">
-        {renderHomeGuidanceCard()}
-
-        <div className="grid gap-4 xl:grid-cols-4">
-          <Card>
-            <CardContent className="py-4">
-              <p className="text-sm text-fg-muted">扫描总数</p>
-              <p className="mt-2 text-3xl font-semibold text-fg-default">{preview?.summary.total ?? 0}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-4">
-              <p className="text-sm text-fg-muted">将移动 / 已移动</p>
-              <p className="mt-2 text-3xl font-semibold text-success">{movedCount}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-4">
-              <p className="text-sm text-fg-muted">未命中</p>
-              <p className="mt-2 text-3xl font-semibold text-warning">{preview?.summary.unmatched ?? 0}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-4">
-              <p className="text-sm text-fg-muted">错误 / 跳过</p>
-              <p className="mt-2 text-3xl font-semibold text-danger">{preview?.summary.errors ?? 0}</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="space-y-5">{renderPreviewCard()}</div>
-          <div className="space-y-5">
-            {renderFieldSuggestionsCard()}
-            {renderHistoryCard()}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  function renderRulesPage() {
-    return (
-      <div className="space-y-5">
-        <Card>
-          <CardHeader>
-            <CardTitle>规则管理</CardTitle>
-            <CardDescription>拖动卡片即可改变优先级。已选择 {selectedRuleCount} 条规则。</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            <Button variant="default" onClick={openCreateRuleDialog}>
-              <Plus className="h-4 w-4" />
-              新增规则
-            </Button>
-            <Button variant="outline" onClick={selectAllRules} disabled={rules.length === 0}>
-              全选
-            </Button>
-            <Button variant="outline" onClick={clearRuleSelection} disabled={selectedRuleCount === 0}>
-              清空选择
-            </Button>
-            <Button variant="outline" onClick={() => confirmSelectedRulesEnabled(true)} disabled={selectedRuleCount === 0}>
-              批量启用
-            </Button>
-            <Button variant="outline" onClick={() => confirmSelectedRulesEnabled(false)} disabled={selectedRuleCount === 0}>
-              批量停用
-            </Button>
-            <Button variant="danger" onClick={confirmDeleteSelectedRules} disabled={selectedRuleCount === 0}>
-              批量删除
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>规则列表</CardTitle>
-            <CardDescription>优先级越靠前，命中时越先被采用。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {rules.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-8 text-sm text-fg-muted">
-                还没有规则。点击上方“新增规则”开始配置。
-              </div>
-            ) : (
-              <>
-                {rules.map((rule) => {
-                  const selected = selectedRuleIds.includes(rule.id)
-
-                  return (
-                    <div
-                      key={rule.id}
-                      draggable
-                      onDragStart={(event) => {
-                        setDraggedRuleId(rule.id)
-                        setDropTargetId(rule.id)
-                        event.dataTransfer.effectAllowed = 'move'
-                        event.dataTransfer.setData('text/plain', rule.id)
-                      }}
-                      onDragEnd={() => {
-                        setDraggedRuleId(null)
-                        setDropTargetId(null)
-                      }}
-                      onDragEnter={() => {
-                        if (draggedRuleId && draggedRuleId !== rule.id) {
-                          setDropTargetId(rule.id)
-                        }
-                      }}
-                      onDragLeave={(event) => {
-                        const nextTarget = event.relatedTarget as Node | null
-                        if (!event.currentTarget.contains(nextTarget)) {
-                          setDropTargetId((current) => (current === rule.id ? null : current))
-                        }
-                      }}
-                      onDragOver={(event) => {
-                        event.preventDefault()
-                        event.dataTransfer.dropEffect = 'move'
-                        if (draggedRuleId && draggedRuleId !== rule.id) {
-                          setDropTargetId(rule.id)
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault()
-                        if (draggedRuleId) {
-                          void reorderRules(draggedRuleId, rule.id)
-                        }
-                        setDraggedRuleId(null)
-                        setDropTargetId(null)
-                      }}
-                      className={cn(
-                        'rounded-md border border-border-default bg-canvas-card p-4 transition-colors duration-150',
-                        selected && 'border-accent bg-accent-muted/40',
-                        draggedRuleId === rule.id && 'opacity-60',
-                        dropTargetId === rule.id &&
-                          draggedRuleId !== rule.id &&
-                          'border-accent bg-accent-muted/25 shadow-[inset_0_2px_0_0_#0969da]'
-                      )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <input
-                          type="checkbox"
-                          className="mt-1 h-4 w-4 rounded border-border-default accent-[#0969da]"
-                          checked={selected}
-                          onChange={(event) => toggleRuleSelection(rule.id, event.target.checked)}
-                        />
-                        <div className="mt-0.5 flex h-8 w-8 shrink-0 cursor-grab items-center justify-center rounded-md border border-border-default bg-canvas-default text-xs text-fg-muted">
-                          ::
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant={rule.enabled ? 'success' : 'neutral'}>{`P${rule.priority}`}</Badge>
-                            <p className="text-sm font-semibold text-fg-default">{rule.name}</p>
-                          </div>
-                          <p className="mt-2 text-sm text-fg-muted">{rule.keywords.join(' / ')}</p>
-                          <p className="mt-2 text-code text-fg-subtle">{rule.outputFolderName}</p>
-                          <p className="mt-3 text-xs text-fg-muted">
-                            {dropTargetId === rule.id && draggedRuleId !== rule.id
-                              ? '释放后会插入到这条规则之前。'
-                              : '拖动卡片可调整顺序。'}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={rule.enabled}
-                            onCheckedChange={(checked) => void toggleRule(rule.id, checked)}
-                          />
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            aria-label={`编辑规则 ${rule.name}`}
-                            onClick={() => openEditRuleDialog(rule)}
-                          >
-                            <PencilLine className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            aria-label={`删除规则 ${rule.name}`}
-                            onClick={() => confirmDeleteRule(rule)}
-                          >
-                            <Trash2 className="h-4 w-4 text-danger" />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-
-                <div
-                  className={cn(
-                    'rounded-md border border-dashed border-border-default bg-canvas-default px-4 py-3 text-center text-sm text-fg-muted transition-colors duration-150',
-                    dropTargetId === RULE_END_DROP_TARGET && 'border-accent bg-accent-muted/25 text-accent'
-                  )}
-                  onDragEnter={() => {
-                    if (draggedRuleId) {
-                      setDropTargetId(RULE_END_DROP_TARGET)
-                    }
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = 'move'
-                    if (draggedRuleId) {
-                      setDropTargetId(RULE_END_DROP_TARGET)
-                    }
-                  }}
-                  onDragLeave={(event) => {
-                    const nextTarget = event.relatedTarget as Node | null
-                    if (!event.currentTarget.contains(nextTarget)) {
-                      setDropTargetId((current) => (current === RULE_END_DROP_TARGET ? null : current))
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    if (draggedRuleId) {
-                      void moveRuleToEnd(draggedRuleId)
-                    }
-                    setDraggedRuleId(null)
-                    setDropTargetId(null)
-                  }}
-                >
-                  {dropTargetId === RULE_END_DROP_TARGET ? '释放后会移动到列表末尾' : '将卡片拖到这里可放到列表末尾'}
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  function renderGuidePage() {
-    return (
-      <div className="grid gap-5 xl:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>流程说明</CardTitle>
-            <CardDescription>首页只保留主要操作，规则和说明已拆分独立页面。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm text-fg-muted">
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              1. 在首页选择源目录和输出根目录。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              2. 先用“字段建议”快速生成基础规则，或去“规则管理”页面继续细调。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              3. 回到首页生成预览，确认命中、未命中和错误项。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              4. 确认无误后再执行整理，结果会写入最近任务日志。
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>规则说明</CardTitle>
-            <CardDescription>当前版本的行为固定，便于稳定使用。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm text-fg-muted">
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              规则匹配采用“大小写忽略 + 文件名包含 + 任一关键词命中”。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              多条规则同时命中时，按规则列表顺序取第一条，因此拖动排序会直接影响结果。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              目标目录已有同名文件时，会自动改名为 <span className="font-mono">name (1)</span> 这类格式。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              未命中文件不会移动，会在预览和最终结果里单独列出。
-            </div>
-            <div className="rounded-md border border-border-default bg-canvas-default px-3 py-3">
-              当源目录和输出根目录相同时，程序会自动跳过已作为输出使用的子文件夹，避免重复整理。
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  const pageMeta: Record<AppView, { title: string; description: string }> = {
-    home: {
-      title: '一格',
-      description: '一格（Uno）首页保留主要功能：选目录、查看字段建议、预览整理和执行整理。'
-    },
-    rules: {
-      title: '规则管理',
-      description: '规则列表已独立成页，支持拖动排序、全选和批量操作。'
-    },
-    guide: {
-      title: '说明',
-      description: '流程说明和规则说明已独立成页，避免首页堆叠过多信息。'
+    if (preview.summary.matched === 0) {
+      setNotice({ tone: 'warning', message: '当前预览里没有将要整理的文件。' })
+      return
     }
+
+    requestConfirmation({
+      title: '开始整理文件',
+      description: '确认后将按当前预览执行整理。你可以在首页查看进度，也可以在完成后撤销最近一次整理。',
+      confirmLabel: '确认开始整理',
+      confirmTone: 'default',
+      onConfirm: async () => {
+        try {
+          const runLog = await runWithTask('run', (taskId) =>
+            window.api.executeRun({
+              sourceRoot,
+              outputRoot,
+              rules,
+              taskId
+            })
+          )
+
+          setPreview(toDisplayPreview(runLog))
+          setHistory((current) => [runLog, ...current.filter((entry) => entry.runId !== runLog.runId)])
+          await refreshSuggestions()
+          setNotice({
+            tone: runLog.summary.errors > 0 ? 'warning' : 'success',
+            message:
+              runLog.summary.errors > 0
+                ? `整理完成，成功 ${runLog.summary.moved} 个，失败 ${runLog.summary.errors} 个。`
+                : `整理完成，成功处理 ${runLog.summary.moved} 个文件。`
+          })
+        } catch (error) {
+          if (!isCancelledError(error)) {
+            setNotice({ tone: 'danger', message: error instanceof Error ? error.message : '整理失败。' })
+          }
+        }
+      }
+    })
   }
 
-  if (loading) {
+  function handleUndo(runId: string) {
+    requestConfirmation({
+      title: '撤销上一次整理',
+      description: '系统会尝试把最近整理回源路径。如果原路径已存在文件，会自动改名避免覆盖。',
+      confirmLabel: '确认撤销',
+      confirmTone: 'default',
+      onConfirm: async () => {
+        try {
+          const updatedRunLog = await runWithTask('undo', (taskId) =>
+            window.api.undoRun({
+              runId,
+              taskId
+            })
+          )
+
+          setHistory((current) =>
+            current.map((entry) => (entry.runId === updatedRunLog.runId ? updatedRunLog : entry))
+          )
+          setPreview(toDisplayPreview(updatedRunLog))
+          await refreshSuggestions()
+          setNotice({ tone: 'success', message: `撤销完成，恢复 ${updatedRunLog.summary.undone} 个文件。` })
+        } catch (error) {
+          if (!isCancelledError(error)) {
+            setNotice({ tone: 'danger', message: error instanceof Error ? error.message : '撤销失败。' })
+          }
+        }
+      }
+    })
+  }
+
+  async function handleCancelTask() {
+    if (!activeTaskId) {
+      return
+    }
+
+    await window.api.cancelTask(activeTaskId)
+    setNotice({ tone: 'warning', message: '已请求取消当前任务。' })
+  }
+
+  function reorderRules(draggedRuleId: string, targetRuleId: string | null) {
+    const orderedRules = [...rules]
+    const sourceIndex = orderedRules.findIndex((rule) => rule.id === draggedRuleId)
+    if (sourceIndex === -1) {
+      return rules
+    }
+
+    const [draggedRule] = orderedRules.splice(sourceIndex, 1)
+    if (!draggedRule) {
+      return rules
+    }
+
+    if (!targetRuleId) {
+      orderedRules.push(draggedRule)
+      return normalizeRules(orderedRules)
+    }
+
+    const targetIndex = orderedRules.findIndex((rule) => rule.id === targetRuleId)
+    if (targetIndex === -1) {
+      orderedRules.push(draggedRule)
+      return normalizeRules(orderedRules)
+    }
+
+    orderedRules.splice(targetIndex, 0, draggedRule)
+    return normalizeRules(orderedRules)
+  }
+
+  async function handleDropOn(targetRuleId: string | null) {
+    if (!draggingRuleId) {
+      return
+    }
+
+    const nextRules = reorderRules(draggingRuleId, targetRuleId)
+    await persistState(nextRules, settings)
+    setDraggingRuleId(null)
+    setDropTargetId(null)
+  }
+
+  const navItems = [
+    {
+      key: 'home',
+      label: '首页',
+      icon: Orbit
+    },
+    {
+      key: 'rules',
+      label: '规则管理',
+      icon: LayoutPanelLeft
+    },
+    {
+      key: 'guide',
+      label: '说明',
+      icon: ScrollText
+    }
+  ] as const
+
+  if (isBootstrapping) {
     return (
-      <div className="flex h-full items-center justify-center bg-canvas-default">
-        <div className="surface-panel flex items-center gap-3 px-6 py-4 text-sm text-fg-muted">
-          <RefreshCcw className="h-4 w-4 animate-spin" />
-          正在加载应用状态...
+      <div className="app-shell">
+        <div className="mx-auto flex min-h-screen w-full max-w-[1440px] items-center justify-center px-6 py-12">
+          <div className="glass-tile rounded-[28px] px-8 py-10 text-center shadow-float">
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Uno / 一格</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#0f172a]">正在加载工作台…</h1>
+          </div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-full bg-canvas-default px-5 py-5 text-fg-default">
-      <div className="mx-auto flex max-w-[1680px] flex-col gap-5">
-        <header className="surface-panel overflow-hidden">
-          <div className="border-b border-border-muted px-5 py-4">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-              <div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="rounded-md border border-border-default bg-canvas-default px-2 py-1 text-sm font-semibold text-fg-muted">
-                    Uno
-                  </div>
-                  <Badge variant="neutral">GitHub Light</Badge>
-                  <Badge variant="accent">Windows</Badge>
-                </div>
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight text-fg-default">
-                  {pageMeta[activeView].title}
-                </h1>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-fg-muted">
-                  {pageMeta[activeView].description}
-                </p>
+    <div className="app-shell">
+      <div className="mesh-grid" />
+      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-6 px-5 py-5 md:px-8 md:py-7">
+        <header className="topbar rounded-[26px] px-5 py-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="brand-mark">
+                <span>U</span>
               </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant={activeView === 'home' ? 'secondary' : 'ghost'}
-                  onClick={() => void setActiveView('home')}
-                >
-                  首页
-                </Button>
-                <Button
-                  variant={activeView === 'rules' ? 'secondary' : 'ghost'}
-                  onClick={() => void setActiveView('rules')}
-                >
-                  规则管理
-                </Button>
-                <Button
-                  variant={activeView === 'guide' ? 'secondary' : 'ghost'}
-                  onClick={() => void setActiveView('guide')}
-                >
-                  说明
-                </Button>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Uno</p>
+                <h1 className="text-2xl font-semibold tracking-[-0.04em] text-[#0f172a]">一格</h1>
               </div>
             </div>
-          </div>
 
-          {activeView === 'home' ? (
-            <>
-              <div className="grid gap-4 px-5 py-4 lg:grid-cols-2">
-                <DropPathField
-                  label="源目录"
-                  description="递归扫描全部子目录"
-                  value={storedState.settings.lastSourceRoot}
-                  onPick={() => void handlePickFolder('source')}
-                  onClear={() => {
-                    setPreview(null)
-                    void updateSettings({ lastSourceRoot: '' })
-                  }}
-                  onDropPath={(targetPath) => void handleDroppedPath('source', targetPath)}
-                />
-                <DropPathField
-                  label="输出根目录"
-                  description="自动创建分类子文件夹"
-                  value={storedState.settings.lastOutputRoot}
-                  onPick={() => void handlePickFolder('output')}
-                  onClear={() => {
-                    setPreview(null)
-                    void updateSettings({ lastOutputRoot: '' })
-                  }}
-                  onDropPath={(targetPath) => void handleDroppedPath('output', targetPath)}
-                />
-              </div>
-              <div className="flex flex-col gap-3 border-t border-border-muted px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="text-sm text-fg-muted">
-                  当前建议：先生成预览计划，再执行真实整理。
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="default" onClick={runPreview} disabled={previewing || executing}>
-                    <RefreshCcw className={cn('h-4 w-4', previewing && 'animate-spin')} />
-                    生成预览计划
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={executeRun}
-                    disabled={!preview || previewing || executing}
+            <nav className="flex flex-wrap gap-2">
+              {navItems.map((item) => {
+                const Icon = item.icon
+                const active = settings.windowLayout.activeView === item.key
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`nav-pill ${active ? 'nav-pill-active' : ''}`}
+                    onClick={() =>
+                      void applySettings({
+                        windowLayout: {
+                          ...settings.windowLayout,
+                          activeView: item.key
+                        }
+                      })
+                    }
                   >
-                    <Play className="h-4 w-4" />
-                    确认后开始整理
-                  </Button>
-                </div>
-              </div>
-            </>
-          ) : null}
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </button>
+                )
+              })}
+            </nav>
+
+            <div className="hidden items-center gap-2 text-sm text-fg-muted xl:flex">
+              <span>{sourceRoot || '未选择源目录'}</span>
+              <ArrowRight className="h-4 w-4" />
+              <span>{outputRoot || '未选择输出根目录'}</span>
+            </div>
+          </div>
         </header>
 
-        {notice ? (
-          <div className={cn('rounded-md border px-4 py-3 text-sm', getNoticeClasses(notice.tone))}>
-            {notice.message}
-          </div>
+        <NoticeBanner notice={notice} />
+
+        {settings.windowLayout.activeView === 'home' ? (
+          <HomePage
+            sourceRoot={sourceRoot}
+            outputRoot={outputRoot}
+            preview={preview}
+            previewTab={settings.windowLayout.activeTab}
+            suggestionResult={suggestionResult}
+            selectedSuggestions={selectedSuggestions}
+            history={history}
+            activeTask={activeTask}
+            canCancelTask={canCancelTask}
+            onPreviewTabChange={(tab) =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  activeTab: tab
+                }
+              })
+            }
+            onPickSource={() => void handlePickSource()}
+            onPickOutput={() => void handlePickOutput()}
+            onRefreshSuggestions={() => void refreshSuggestions()}
+            onCreateRulesFromSuggestions={(openRulesPage) => void handleCreateRulesFromSuggestions(openRulesPage)}
+            onGeneratePreview={() => void handleGeneratePreview()}
+            onExecute={() => void handleExecute()}
+            onUndo={(runId) => handleUndo(runId)}
+            onCancelTask={() => void handleCancelTask()}
+            onOpenRules={() =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  activeView: 'rules'
+                }
+              })
+            }
+            onOpenGuide={() =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  activeView: 'guide'
+                }
+              })
+            }
+            onToggleSuggestion={handleToggleSuggestion}
+          />
         ) : null}
 
-        {activeView === 'home' ? renderHomePage() : null}
-        {activeView === 'rules' ? renderRulesPage() : null}
-        {activeView === 'guide' ? renderGuidePage() : null}
+        {settings.windowLayout.activeView === 'rules' ? (
+          <RulesPage
+            ruleGroups={groupedRules}
+            duplicateRuleIds={duplicateRuleIds}
+            rulesSearch={settings.windowLayout.rulesSearch}
+            ruleFilter={settings.windowLayout.ruleFilter}
+            ruleGroup={settings.windowLayout.ruleGroup}
+            selectedRuleIds={selectedRuleIds}
+            dragEnabled={settings.windowLayout.ruleGroup === 'none'}
+            draggingRuleId={draggingRuleId}
+            dropTargetId={dropTargetId}
+            onRulesSearchChange={(value) =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  rulesSearch: value
+                }
+              })
+            }
+            onRuleFilterChange={(value: RuleFilterMode) =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  ruleFilter: value
+                }
+              })
+            }
+            onRuleGroupChange={(value: RuleGroupMode) =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  ruleGroup: value
+                }
+              })
+            }
+            onCreateRule={openCreateRuleDialog}
+            onImportRules={() => void handleImportRules()}
+            onExportRules={() => void handleExportRules()}
+            onSelectAllVisible={handleSelectAllVisible}
+            onClearSelection={() => setSelectedRuleIds(new Set())}
+            onBatchEnable={() => void handleBatchEnable()}
+            onBatchDisable={() => void handleBatchDisable()}
+            onBatchDelete={handleBatchDelete}
+            onEditRule={openEditRuleDialog}
+            onDeleteRule={(rule) => void handleDeleteRule(rule)}
+            onToggleRuleEnabled={(ruleId) => void handleToggleRuleEnabled(ruleId)}
+            onToggleRuleSelection={handleToggleRuleSelection}
+            onDragStart={(ruleId) => {
+              setDraggingRuleId(ruleId)
+              setDropTargetId(ruleId)
+            }}
+            onDragEnter={(ruleId) => {
+              if (draggingRuleId) {
+                setDropTargetId(ruleId)
+              }
+            }}
+            onDragEnd={() => {
+              setDraggingRuleId(null)
+              setDropTargetId(null)
+            }}
+            onDropOn={(targetRuleId) => void handleDropOn(targetRuleId)}
+            onGoHome={() =>
+              void applySettings({
+                windowLayout: {
+                  ...settings.windowLayout,
+                  activeView: 'home'
+                }
+              })
+            }
+          />
+        ) : null}
+
+        {settings.windowLayout.activeView === 'guide' ? <GuidePage /> : null}
+
+        <footer className="flex flex-col gap-2 rounded-[24px] border border-[rgba(15,23,42,0.08)] bg-white/70 px-5 py-4 text-sm text-fg-muted backdrop-blur xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-fg-default">一格</span>
+            <span>让文件整理像排产一样清晰。</span>
+          </div>
+          <div className="flex flex-wrap gap-4">
+            <span>规则数：{rules.length}</span>
+            <span>最近更新：{history[0] ? formatDateTime(history[0].finishedAt) : '暂无'}</span>
+          </div>
+        </footer>
       </div>
 
       <RuleEditorDialog
-        open={dialogOpen}
         draft={ruleDraft}
+        open={ruleDialogOpen}
         onChange={setRuleDraft}
-        onOpenChange={(open) => {
-          setDialogOpen(open)
-          if (!open) {
-            setRuleDraft(emptyRuleDraft())
-          }
-        }}
+        onOpenChange={setRuleDialogOpen}
         onSave={() => void handleSaveRule()}
       />
-      <ConfirmDialog
-        confirmState={confirmState}
-        confirming={confirmingAction}
-        onConfirm={() => void handleConfirmAction()}
-        onOpenChange={(open) => {
-          if (!open && !confirmingAction) {
-            setConfirmState(null)
-          }
-        }}
-      />
+      <ConfirmDialog confirmState={confirmState} onOpenChange={(open) => !open && setConfirmState(null)} />
     </div>
   )
 }

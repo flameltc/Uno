@@ -3,6 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 
 import type { AppSettings, RunLog, StoredState } from '@shared/types'
+import { normalizeRules } from '@shared/rules'
 
 const DEFAULT_SETTINGS: AppSettings = {
   lastSourceRoot: '',
@@ -11,7 +12,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
   windowLayout: {
     activeView: 'home',
-    activeTab: 'matched'
+    activeTab: 'matched',
+    rulesSearch: '',
+    ruleFilter: 'all',
+    ruleGroup: 'none'
   }
 }
 
@@ -62,14 +66,7 @@ function normalizeState(candidate: Partial<StoredState> | null | undefined): Sto
         ...candidate.settings?.windowLayout
       }
     },
-    rules: Array.isArray(candidate.rules)
-      ? [...candidate.rules]
-          .sort((left, right) => left.priority - right.priority)
-          .map((rule, index) => ({
-            ...rule,
-            priority: index + 1
-          }))
-      : []
+    rules: normalizeRules(Array.isArray(candidate.rules) ? candidate.rules : [])
   }
 }
 
@@ -92,10 +89,24 @@ export async function loadHistory() {
   return Array.isArray(history) ? history : []
 }
 
-export async function appendRunLog(log: RunLog) {
+export async function saveHistory(history: RunLog[]) {
   const { historyPath } = getStoragePaths()
+  await writeJsonFile(historyPath, history.slice(0, 30))
+  return history.slice(0, 30)
+}
+
+export async function appendRunLog(log: RunLog) {
   const currentHistory = await loadHistory()
-  const nextHistory = [log, ...currentHistory].slice(0, 20)
-  await writeJsonFile(historyPath, nextHistory)
-  return nextHistory
+  return saveHistory([log, ...currentHistory])
+}
+
+export async function replaceRunLog(updatedLog: RunLog) {
+  const currentHistory = await loadHistory()
+  const nextHistory = currentHistory.map((entry) => (entry.runId === updatedLog.runId ? updatedLog : entry))
+  return saveHistory(nextHistory)
+}
+
+export async function findRunLog(runId: string) {
+  const history = await loadHistory()
+  return history.find((entry) => entry.runId === runId) ?? null
 }

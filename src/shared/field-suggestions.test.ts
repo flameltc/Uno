@@ -45,4 +45,26 @@ describe('suggestFrequentFields', () => {
       count: 3
     })
   })
+
+  it('filters filler tokens and keeps recurring meaningful fields', () => {
+    const suggestions = suggestFrequentFields(
+      [
+        'Invoice-final-copy-Acme.pdf',
+        'Invoice-final-copy-Globex.pdf',
+        'Invoice-review-copy-Acme.pdf',
+        'Receipt-copy-Globex.pdf'
+      ],
+      10
+    )
+
+    expect(suggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: 'invoice', count: 3 }),
+        expect.objectContaining({ value: 'acme', count: 2 }),
+        expect.objectContaining({ value: 'globex', count: 2 })
+      ])
+    )
+    expect(suggestions.map((suggestion) => suggestion.value)).not.toContain('copy')
+    expect(suggestions.map((suggestion) => suggestion.value)).not.toContain('final')
+  })
 })

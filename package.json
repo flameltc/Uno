@@ -1,7 +1,7 @@
 {
-  "name": "namesort",
+  "name": "uno-desktop",
   "version": "0.1.0",
-  "description": "Uno desktop file organizer for Windows.",
+  "description": "Uno / 一格 desktop file organizer for Windows.",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -25,6 +25,7 @@
     "appId": "com.uno.desktop",
     "productName": "Uno",
     "asar": true,
+    "icon": "build/icon.ico",
     "directories": {
       "output": "release/${version}",
       "buildResources": "build"
@@ -35,6 +36,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "portable",

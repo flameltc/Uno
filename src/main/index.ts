@@ -13,7 +13,7 @@ function createMainWindow() {
     height: 920,
     minWidth: 1200,
     minHeight: 760,
-    title: 'Uno',
+    title: '一格 Uno',
     backgroundColor: '#f6f8fa',
     autoHideMenuBar: true,
     webPreferences: {

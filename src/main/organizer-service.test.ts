@@ -7,14 +7,16 @@ import {
   executePreviewItems,
   generatePreviewFromDisk,
   scanSourceFiles,
-  suggestFrequentFieldsFromDisk
+  suggestFrequentFieldsFromDisk,
+  TaskCancelledError,
+  undoRunLog
 } from './organizer-service'
 import type { PreviewItem } from '@shared/types'
 
 const tempDirs: string[] = []
 
 async function makeTempDir() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'namesort-'))
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'uno-'))
   tempDirs.push(dir)
   return dir
 }
@@ -62,7 +64,10 @@ describe('generatePreviewFromDisk', () => {
           keywords: ['合同'],
           outputFolderName: '合同',
           enabled: true,
-          priority: 1
+          priority: 1,
+          matchMode: 'any',
+          excludeKeywords: [],
+          extensions: []
         }
       ]
     })
@@ -99,7 +104,10 @@ describe('suggestFrequentFieldsFromDisk', () => {
           keywords: ['合同'],
           outputFolderName: '合同',
           enabled: true,
-          priority: 1
+          priority: 1,
+          matchMode: 'any',
+          excludeKeywords: [],
+          extensions: []
         }
       ]
     })
@@ -188,6 +196,70 @@ describe('executePreviewItems', () => {
     expect(calls).toContain('copy:C:\\source\\invoice.pdf->D:\\sorted\\发票\\invoice.pdf')
     expect(calls).toContain('unlink:C:\\source\\invoice.pdf')
     expect(result.summary.moved).toBe(1)
-    expect(result.items[0]?.message).toContain('已通过复制后删除完成跨盘移动')
+    expect(result.items[0]?.executionState).toBe('copied')
+  })
+})
+
+describe('task controls', () => {
+  it('stops scanning when cancellation is requested', async () => {
+    const sourceRoot = await makeTempDir()
+    await fs.writeFile(path.join(sourceRoot, 'alpha.txt'), 'a')
+    await fs.writeFile(path.join(sourceRoot, 'beta.txt'), 'b')
+
+    await expect(
+      scanSourceFiles(sourceRoot, undefined, [], {
+        isCancelled: () => true
+      })
+    ).rejects.toBeInstanceOf(TaskCancelledError)
+  })
+
+  it('undoes a completed run by moving files back to their source path', async () => {
+    const workspace = await makeTempDir()
+    const sourcePath = path.join(workspace, 'source', 'invoice.pdf')
+    const targetPath = path.join(workspace, 'sorted', 'invoices', 'invoice.pdf')
+
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.mkdir(path.dirname(targetPath), { recursive: true })
+    await fs.writeFile(targetPath, 'restorable')
+
+    const result = await undoRunLog({
+      runId: 'run-1',
+      startedAt: new Date('2026-01-01T09:00:00.000Z').toISOString(),
+      finishedAt: new Date('2026-01-01T09:01:00.000Z').toISOString(),
+      sourceRoot: path.join(workspace, 'source'),
+      outputRoot: path.join(workspace, 'sorted'),
+      isUndoAvailable: true,
+      summary: {
+        total: 1,
+        matched: 1,
+        unmatched: 0,
+        errors: 0,
+        renamed: 0,
+        moved: 1,
+        skipped: 0,
+        copied: 0,
+        undone: 0,
+        undoErrors: 0
+      },
+      items: [
+        {
+          sourcePath,
+          fileName: 'invoice.pdf',
+          matchedRuleId: 'invoice',
+          matchedRuleName: 'Invoice',
+          targetPath,
+          finalTargetFileName: 'invoice.pdf',
+          conflictResolution: 'none',
+          action: 'move',
+          status: 'matched',
+          executionState: 'moved'
+        }
+      ]
+    })
+
+    await expect(fs.readFile(sourcePath, 'utf8')).resolves.toBe('restorable')
+    await expect(fs.access(targetPath)).rejects.toThrow()
+    expect(result.summary.undone).toBe(1)
+    expect(result.items[0]?.executionState).toBe('undone')
   })
 })
