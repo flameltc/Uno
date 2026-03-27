@@ -20,6 +20,11 @@ const defaultFileOps: FileOps = {
   unlink: fs.unlink
 }
 
+function normalizeRootForComparison(targetPath: string) {
+  const resolvedPath = path.resolve(targetPath)
+  return process.platform === 'win32' ? resolvedPath.toLocaleLowerCase() : resolvedPath
+}
+
 function isSameOrNested(rootPath: string, candidatePath: string) {
   const relativePath = path.relative(rootPath, candidatePath)
   return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
@@ -34,13 +39,30 @@ async function pathExists(targetPath: string) {
   }
 }
 
-async function walkFiles(rootPath: string, ignoredRoot?: string): Promise<string[]> {
+function buildIgnoredRoots(sourceRoot: string, outputRoot: string, outputFolderNames: string[] = []) {
+  const normalizedSourceRoot = normalizeRootForComparison(sourceRoot)
+  const normalizedOutputRoot = normalizeRootForComparison(outputRoot)
+
+  if (normalizedSourceRoot === normalizedOutputRoot) {
+    return [...new Set(outputFolderNames.map((name) => name.trim()).filter(Boolean))].map((folderName) =>
+      path.join(outputRoot, folderName)
+    )
+  }
+
+  if (isSameOrNested(sourceRoot, outputRoot)) {
+    return [outputRoot]
+  }
+
+  return []
+}
+
+async function walkFiles(rootPath: string, ignoredRoots: string[] = []): Promise<string[]> {
   const entries = await fs.readdir(rootPath, { withFileTypes: true })
   const files: string[] = []
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))) {
     const fullPath = path.join(rootPath, entry.name)
-    if (ignoredRoot && isSameOrNested(ignoredRoot, fullPath)) {
+    if (ignoredRoots.some((ignoredRoot) => isSameOrNested(ignoredRoot, fullPath))) {
       continue
     }
 
@@ -49,7 +71,7 @@ async function walkFiles(rootPath: string, ignoredRoot?: string): Promise<string
     }
 
     if (entry.isDirectory()) {
-      files.push(...(await walkFiles(fullPath, ignoredRoot)))
+      files.push(...(await walkFiles(fullPath, ignoredRoots)))
       continue
     }
 
@@ -61,9 +83,9 @@ async function walkFiles(rootPath: string, ignoredRoot?: string): Promise<string
   return files
 }
 
-export async function scanSourceFiles(sourceRoot: string, outputRoot: string) {
-  const ignoredRoot = isSameOrNested(sourceRoot, outputRoot) ? outputRoot : undefined
-  const files = await walkFiles(sourceRoot, ignoredRoot)
+export async function scanSourceFiles(sourceRoot: string, outputRoot: string, outputFolderNames: string[] = []) {
+  const ignoredRoots = buildIgnoredRoots(sourceRoot, outputRoot, outputFolderNames)
+  const files = await walkFiles(sourceRoot, ignoredRoots)
   return files.sort((left, right) => left.localeCompare(right, 'zh-CN'))
 }
 
@@ -77,7 +99,11 @@ async function collectExistingTargetPaths(outputRoot: string) {
 
 export async function generatePreviewFromDisk(request: PreviewRequest): Promise<PreviewResult> {
   const [filePaths, existingTargetPaths] = await Promise.all([
-    scanSourceFiles(request.sourceRoot, request.outputRoot),
+    scanSourceFiles(
+      request.sourceRoot,
+      request.outputRoot,
+      request.rules.map((rule) => rule.outputFolderName)
+    ),
     collectExistingTargetPaths(request.outputRoot)
   ])
 

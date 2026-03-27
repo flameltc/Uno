@@ -533,14 +533,6 @@ export default function App() {
       return false
     }
 
-    if (storedState.settings.lastSourceRoot === storedState.settings.lastOutputRoot) {
-      setNotice({
-        tone: 'warning',
-        message: '源目录和输出根目录不能是同一个文件夹。'
-      })
-      return false
-    }
-
     return true
   }
 

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { executePreviewItems, scanSourceFiles } from './organizer-service'
+import { executePreviewItems, generatePreviewFromDisk, scanSourceFiles } from './organizer-service'
 import type { PreviewItem } from '@shared/types'
 
 const tempDirs: string[] = []
@@ -33,6 +33,41 @@ describe('scanSourceFiles', () => {
     const files = await scanSourceFiles(sourceRoot, outputRoot)
 
     expect(files).toEqual([path.join(nestedDir, '合同.pdf')])
+  })
+})
+
+describe('generatePreviewFromDisk', () => {
+  it('allows using the same source and output root while skipping managed output folders', async () => {
+    const sourceRoot = await makeTempDir()
+    const outputFolder = path.join(sourceRoot, '合同')
+    const otherFolder = path.join(sourceRoot, '收集箱')
+    await fs.mkdir(outputFolder, { recursive: true })
+    await fs.mkdir(otherFolder, { recursive: true })
+    await fs.writeFile(path.join(sourceRoot, '合同-根目录.pdf'), 'a')
+    await fs.writeFile(path.join(outputFolder, '已整理合同.pdf'), 'b')
+    await fs.writeFile(path.join(otherFolder, '合同-子目录.pdf'), 'c')
+
+    const preview = await generatePreviewFromDisk({
+      sourceRoot,
+      outputRoot: path.join(sourceRoot, '.'),
+      rules: [
+        {
+          id: 'contract',
+          name: '合同',
+          keywords: ['合同'],
+          outputFolderName: '合同',
+          enabled: true,
+          priority: 1
+        }
+      ]
+    })
+
+    expect(preview.summary.total).toBe(2)
+    expect(preview.items.map((item) => item.sourcePath)).toEqual([
+      path.join(sourceRoot, '合同-根目录.pdf'),
+      path.join(otherFolder, '合同-子目录.pdf')
+    ])
+    expect(preview.items.every((item) => item.targetPath?.startsWith(outputFolder))).toBe(true)
   })
 })
 
