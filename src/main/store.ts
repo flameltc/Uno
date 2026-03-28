@@ -8,7 +8,8 @@ import { normalizeRules } from '@shared/rules'
 const DEFAULT_SETTINGS: AppSettings = {
   lastSourceRoot: '',
   lastOutputRoot: '',
-  theme: 'github-light',
+  scanSubdirectories: false,
+  theme: 'uno-dark',
   locale: 'zh-CN',
   windowLayout: {
     activeView: 'home',

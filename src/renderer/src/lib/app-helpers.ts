@@ -90,13 +90,13 @@ export function formatDateTime(timestamp: string) {
 export function getNoticeClasses(tone: NoticeTone) {
   switch (tone) {
     case 'success':
-      return 'border-[#9be9a8] bg-success-subtle text-success'
+      return 'border-success/30 bg-success-subtle text-success'
     case 'warning':
-      return 'border-[#d4a72c] bg-warning-subtle text-warning'
+      return 'border-warning/30 bg-warning-subtle text-warning'
     case 'danger':
-      return 'border-[#ff8182] bg-danger-subtle text-danger'
+      return 'border-danger/30 bg-danger-subtle text-danger'
     default:
-      return 'border-border-default bg-canvas-card text-fg-muted'
+      return 'border-white/10 bg-white/[0.05] text-fg-default'
   }
 }
 
@@ -105,7 +105,7 @@ export function getExecutionLabel(executionState: ExecutionState | undefined) {
     case 'moved':
       return '已移动'
     case 'copied':
-      return '跨盘整理'
+      return '跨盘复制'
     case 'error':
       return '执行失败'
     case 'undone':
@@ -113,7 +113,7 @@ export function getExecutionLabel(executionState: ExecutionState | undefined) {
     case 'undo-error':
       return '撤销失败'
     case 'skipped':
-      return '未处理'
+      return '已跳过'
     default:
       return '待执行'
   }
@@ -145,7 +145,9 @@ export function buildDuplicateRuleIdSet(rules: RuleConfig[]) {
   }
 
   return new Set(
-    [...groupedIds.values()].filter((ids) => ids.length > 1).flatMap((ids) => ids)
+    [...groupedIds.values()]
+      .filter((ids) => ids.length > 1)
+      .flatMap((ids) => ids)
   )
 }
 

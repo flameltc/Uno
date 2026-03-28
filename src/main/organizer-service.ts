@@ -122,7 +122,13 @@ async function emitProgress(
   })
 }
 
-async function walkFiles(rootPath: string, ignoredRoots: string[] = [], task?: TaskControl, phase: TaskPhase = 'scanning-source') {
+async function walkFiles(
+  rootPath: string,
+  ignoredRoots: string[] = [],
+  task?: TaskControl,
+  phase: TaskPhase = 'scanning-source',
+  recursive = true
+) {
   const entries = await fs.readdir(rootPath, { withFileTypes: true })
   const files: string[] = []
 
@@ -139,7 +145,11 @@ async function walkFiles(rootPath: string, ignoredRoots: string[] = [], task?: T
     }
 
     if (entry.isDirectory()) {
-      files.push(...(await walkFiles(fullPath, ignoredRoots, task, phase)))
+      if (!recursive) {
+        continue
+      }
+
+      files.push(...(await walkFiles(fullPath, ignoredRoots, task, phase, true)))
       continue
     }
 
@@ -150,10 +160,6 @@ async function walkFiles(rootPath: string, ignoredRoots: string[] = [], task?: T
   }
 
   return files
-}
-
-function normalizeExtension(filePath: string) {
-  return path.extname(filePath).replace(/^\./, '').toLocaleLowerCase()
 }
 
 function buildUniqueRestorePath(targetPath: string, occupiedPaths: Set<string>) {
@@ -191,11 +197,12 @@ export async function scanSourceFiles(
   sourceRoot: string,
   outputRoot?: string,
   outputFolderNames: string[] = [],
-  task?: TaskControl
+  task?: TaskControl,
+  recursive = false
 ) {
   ensureNotCancelled(task)
   const ignoredRoots = buildIgnoredRoots(sourceRoot, outputRoot, outputFolderNames)
-  const files = await walkFiles(sourceRoot, ignoredRoots, task, 'scanning-source')
+  const files = await walkFiles(sourceRoot, ignoredRoots, task, 'scanning-source', recursive)
   return files.sort((left, right) => left.localeCompare(right, 'zh-CN'))
 }
 
@@ -208,7 +215,8 @@ export async function suggestFrequentFieldsFromDisk(
     request.sourceRoot,
     request.outputRoot,
     request.rules?.map((rule) => rule.outputFolderName) ?? [],
-    task
+    task,
+    request.recursive ?? false
   )
   ensureNotCancelled(task)
   await emitProgress(task, 'planning', '正在提取高频字段…', filePaths.length, filePaths.length)
@@ -235,7 +243,7 @@ async function collectExistingTargetPaths(outputRoot: string, task?: TaskControl
     return []
   }
 
-  return walkFiles(outputRoot, [], task, 'scanning-output')
+  return walkFiles(outputRoot, [], task, 'scanning-output', true)
 }
 
 export async function generatePreviewFromDisk(
@@ -254,7 +262,8 @@ export async function generatePreviewFromDisk(
       normalizedRequest.sourceRoot,
       normalizedRequest.outputRoot,
       normalizedRequest.rules.map((rule) => rule.outputFolderName),
-      task
+      task,
+      normalizedRequest.recursive ?? false
     ),
     collectExistingTargetPaths(normalizedRequest.outputRoot, task)
   ])

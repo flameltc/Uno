@@ -13,8 +13,8 @@ function createMainWindow() {
     height: 920,
     minWidth: 1200,
     minHeight: 760,
-    title: '一格 Uno',
-    backgroundColor: '#f6f8fa',
+    title: 'Uno / 一格',
+    backgroundColor: '#090a0d',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(currentDir, '../preload/index.mjs'),

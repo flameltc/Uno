@@ -43,7 +43,8 @@ export interface RuleConfig {
 export interface AppSettings {
   lastSourceRoot: string
   lastOutputRoot: string
-  theme: 'github-light'
+  scanSubdirectories: boolean
+  theme: 'uno-dark' | 'github-light'
   locale: 'zh-CN'
   windowLayout: {
     activeView: AppView
@@ -63,6 +64,7 @@ export interface PreviewRequest {
   sourceRoot: string
   outputRoot: string
   rules: RuleConfig[]
+  recursive?: boolean
   taskId?: string
 }
 
@@ -79,6 +81,7 @@ export interface FieldSuggestionRequest {
   outputRoot?: string
   rules?: RuleConfig[]
   maxResults?: number
+  recursive?: boolean
   taskId?: string
 }
 

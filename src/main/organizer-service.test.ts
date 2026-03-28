@@ -22,12 +22,37 @@ async function makeTempDir() {
 }
 
 afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true }))
-  )
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true })))
 })
 
 describe('scanSourceFiles', () => {
+  it('does not recurse into subdirectories by default', async () => {
+    const sourceRoot = await makeTempDir()
+    const nestedDir = path.join(sourceRoot, 'contracts')
+    await fs.mkdir(nestedDir, { recursive: true })
+    await fs.writeFile(path.join(sourceRoot, '根目录合同.pdf'), 'a')
+    await fs.writeFile(path.join(nestedDir, '子目录合同.pdf'), 'b')
+
+    const files = await scanSourceFiles(sourceRoot)
+
+    expect(files).toEqual([path.join(sourceRoot, '根目录合同.pdf')])
+  })
+
+  it('recurses into subdirectories when explicitly enabled', async () => {
+    const sourceRoot = await makeTempDir()
+    const nestedDir = path.join(sourceRoot, 'contracts')
+    await fs.mkdir(nestedDir, { recursive: true })
+    await fs.writeFile(path.join(sourceRoot, '根目录合同.pdf'), 'a')
+    await fs.writeFile(path.join(nestedDir, '子目录合同.pdf'), 'b')
+
+    const files = await scanSourceFiles(sourceRoot, undefined, [], undefined, true)
+
+    expect(files).toEqual([
+      path.join(sourceRoot, '根目录合同.pdf'),
+      path.join(nestedDir, '子目录合同.pdf')
+    ])
+  })
+
   it('skips the output root when it is nested inside the source root', async () => {
     const sourceRoot = await makeTempDir()
     const nestedDir = path.join(sourceRoot, 'contracts')
@@ -37,7 +62,7 @@ describe('scanSourceFiles', () => {
     await fs.writeFile(path.join(nestedDir, '合同.pdf'), 'a')
     await fs.writeFile(path.join(outputRoot, '发票', 'existing.pdf'), 'b')
 
-    const files = await scanSourceFiles(sourceRoot, outputRoot)
+    const files = await scanSourceFiles(sourceRoot, outputRoot, [], undefined, true)
 
     expect(files).toEqual([path.join(nestedDir, '合同.pdf')])
   })
@@ -57,6 +82,7 @@ describe('generatePreviewFromDisk', () => {
     const preview = await generatePreviewFromDisk({
       sourceRoot,
       outputRoot: path.join(sourceRoot, '.'),
+      recursive: true,
       rules: [
         {
           id: 'contract',
@@ -96,6 +122,7 @@ describe('suggestFrequentFieldsFromDisk', () => {
     const result = await suggestFrequentFieldsFromDisk({
       sourceRoot,
       outputRoot: sourceRoot,
+      recursive: true,
       maxResults: 10,
       rules: [
         {
@@ -119,9 +146,7 @@ describe('suggestFrequentFieldsFromDisk', () => {
         expect.objectContaining({ value: '张三', count: 2 })
       ])
     )
-    expect(result.suggestions).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ value: '已整理' })])
-    )
+    expect(result.suggestions).not.toEqual(expect.arrayContaining([expect.objectContaining({ value: '已整理' })]))
   })
 })
 
@@ -209,7 +234,7 @@ describe('task controls', () => {
     await expect(
       scanSourceFiles(sourceRoot, undefined, [], {
         isCancelled: () => true
-      })
+      }, true)
     ).rejects.toBeInstanceOf(TaskCancelledError)
   })
 

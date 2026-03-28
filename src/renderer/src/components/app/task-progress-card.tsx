@@ -1,5 +1,3 @@
-import { LoaderCircle, Square, XCircle } from 'lucide-react'
-
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
 import { Card, CardContent } from '@renderer/components/ui/card'
@@ -26,6 +24,47 @@ function getTaskTone(task: TaskProgressEvent | null) {
   return 'accent'
 }
 
+function getTaskLabel(task: TaskProgressEvent) {
+  if (task.kind === 'preview') {
+    return '预览任务'
+  }
+
+  if (task.kind === 'run') {
+    return '整理任务'
+  }
+
+  if (task.kind === 'undo') {
+    return '撤销任务'
+  }
+
+  return '字段分析'
+}
+
+function getPhaseLabel(task: TaskProgressEvent) {
+  switch (task.phase) {
+    case 'queued':
+      return '排队中'
+    case 'scanning-source':
+      return '扫描源目录'
+    case 'scanning-output':
+      return '扫描输出目录'
+    case 'planning':
+      return '生成计划'
+    case 'executing':
+      return '执行中'
+    case 'undoing':
+      return '撤销中'
+    case 'completed':
+      return '已完成'
+    case 'cancelled':
+      return '已取消'
+    case 'failed':
+      return '失败'
+    default:
+      return task.phase
+  }
+}
+
 export function TaskProgressCard({
   task,
   canCancel,
@@ -43,41 +82,39 @@ export function TaskProgressCard({
   const width = `${Math.max(6, task.percent ?? 12)}%`
 
   return (
-    <Card className="overflow-hidden border-[rgba(9,105,218,0.15)] bg-[linear-gradient(180deg,#ffffff_0%,#f8fbff_100%)]">
-      <CardContent className="space-y-4 p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              {task.state === 'running' ? (
-                <LoaderCircle className="h-4 w-4 animate-spin text-accent" />
-              ) : task.state === 'completed' ? (
-                <Square className="h-4 w-4 fill-success text-success" />
-              ) : (
-                <XCircle className="h-4 w-4 text-warning" />
-              )}
-              <span className="text-sm font-semibold text-fg-default">
-                {task.kind === 'preview'
-                  ? '预览任务'
-                  : task.kind === 'run'
-                    ? '整理任务'
-                    : task.kind === 'undo'
-                      ? '撤销任务'
-                      : '字段分析'}
-              </span>
-              <Badge variant={tone}>{task.phase}</Badge>
+    <Card className="overflow-hidden border-accent/10">
+      <CardContent className="task-progress-shell">
+        <div className="task-progress-header">
+          <div className="task-progress-copy">
+            <div className="task-progress-title-row">
+              <span className="text-sm font-semibold text-fg-default">{getTaskLabel(task)}</span>
+              <Badge variant={tone}>{getPhaseLabel(task)}</Badge>
             </div>
-            <p className="text-sm text-fg-muted">{describeTaskProgress(task)}</p>
-            {task.currentPath ? <p className="text-code text-fg-subtle">{task.currentPath}</p> : null}
+            <p className="task-progress-message">{describeTaskProgress(task)}</p>
+            {task.currentPath ? (
+              <div className="task-progress-path-block">
+                <p className="task-progress-path-label">当前文件</p>
+                <p className="task-progress-path-value" title={task.currentPath}>
+                  {task.currentPath}
+                </p>
+              </div>
+            ) : null}
           </div>
-          {canCancel ? (
-            <Button size="sm" variant="outline" onClick={onCancel}>
-              取消任务
-            </Button>
-          ) : null}
+
+          <div className="task-progress-side">
+            {typeof task.percent === 'number' ? (
+              <div className="task-progress-percent">{Math.round(task.percent)}%</div>
+            ) : null}
+            {canCancel ? (
+              <Button size="sm" variant="outline" onClick={onCancel}>
+                取消任务
+              </Button>
+            ) : null}
+          </div>
         </div>
 
-        <div className="h-2 rounded-full bg-[#dbe7f3]">
-          <div className="h-full rounded-full bg-[linear-gradient(90deg,#0f6cfd_0%,#39b8ff_100%)] transition-all duration-200" style={{ width }} />
+        <div className="task-progress-track">
+          <div className="task-progress-bar" style={{ width }} />
         </div>
       </CardContent>
     </Card>

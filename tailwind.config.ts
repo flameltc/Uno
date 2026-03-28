@@ -6,53 +6,56 @@ export default {
     extend: {
       colors: {
         canvas: {
-          default: '#f2f6fb',
-          subtle: '#f7faff',
-          inset: '#edf3fa',
-          card: '#ffffff'
+          default: '#090a0d',
+          subtle: '#0f1117',
+          inset: '#06070a',
+          card: '#14161c',
+          raised: '#1b1e26'
         },
         border: {
-          default: '#d0d7de',
-          muted: '#dbe4ee'
+          default: '#262b36',
+          muted: '#1d212a',
+          strong: '#394254'
         },
         fg: {
-          default: '#24292f',
-          muted: '#57606a',
-          subtle: '#6b7785',
-          onEmphasis: '#ffffff'
+          default: '#f4f7fb',
+          muted: '#a7afbd',
+          subtle: '#788194',
+          onEmphasis: '#071321'
         },
         accent: {
-          DEFAULT: '#0f6cfd',
-          foreground: '#ffffff',
-          subtle: '#dff0ff',
-          muted: '#eef7ff'
+          DEFAULT: '#adc6ff',
+          foreground: '#071321',
+          subtle: '#172339',
+          muted: '#0f1729',
+          strong: '#4b8eff'
         },
         success: {
-          DEFAULT: '#1a7f37',
-          subtle: '#dafbe1'
+          DEFAULT: '#4ade80',
+          subtle: '#102319'
         },
         warning: {
-          DEFAULT: '#9a6700',
-          subtle: '#fff8c5'
+          DEFAULT: '#fbbf24',
+          subtle: '#2f240e'
         },
         danger: {
-          DEFAULT: '#cf222e',
-          subtle: '#ffebe9'
+          DEFAULT: '#fb7185',
+          subtle: '#31131c'
         }
       },
       fontFamily: {
-        sans: ['Segoe UI Variable Text', 'Segoe UI', 'system-ui', 'sans-serif'],
-        mono: ['Cascadia Code', 'Consolas', 'monospace']
+        sans: ['Manrope', 'Segoe UI Variable Text', 'Segoe UI', 'system-ui', 'sans-serif'],
+        mono: ['Cascadia Code', 'IBM Plex Mono', 'Consolas', 'monospace']
       },
       boxShadow: {
-        panel: '0 1px 0 rgba(27, 31, 36, 0.04), 0 10px 30px rgba(15, 23, 42, 0.06)',
-        float: '0 24px 80px rgba(15, 23, 42, 0.14)',
-        hero: '0 30px 120px rgba(15, 23, 42, 0.16)'
+        panel: '0 20px 60px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.03)',
+        float: '0 28px 100px rgba(0, 0, 0, 0.45), 0 0 36px rgba(173, 198, 255, 0.08)',
+        hero: '0 40px 140px rgba(0, 0, 0, 0.5), 0 0 50px rgba(173, 198, 255, 0.09)'
       },
       borderRadius: {
-        sm: '10px',
-        md: '14px',
-        lg: '18px'
+        sm: '12px',
+        md: '18px',
+        lg: '26px'
       }
     }
   },

@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, LayoutPanelLeft, Orbit, ScrollText } from 'lucide-react'
 
 import { ConfirmDialog } from '@renderer/components/app/confirm-dialog'
 import { NoticeBanner } from '@renderer/components/app/notice-banner'
 import { RuleEditorDialog } from '@renderer/components/app/rule-editor-dialog'
 import { Button } from '@renderer/components/ui/button'
-import { createRuleFromSuggestion, normalizeRule, normalizeRules, parseRuleExtensions, parseRuleKeywords } from '@shared/rules'
+import {
+  createRuleFromSuggestion,
+  normalizeRule,
+  normalizeRules,
+  parseRuleExtensions,
+  parseRuleKeywords
+} from '@shared/rules'
 import type {
   AppSettings,
   BootstrapPayload,
@@ -36,7 +41,8 @@ import {
 const DEFAULT_SETTINGS: AppSettings = {
   lastSourceRoot: '',
   lastOutputRoot: '',
-  theme: 'github-light',
+  scanSubdirectories: false,
+  theme: 'uno-dark',
   locale: 'zh-CN',
   windowLayout: {
     activeView: 'home',
@@ -153,7 +159,12 @@ export default function App() {
     }
   }
 
-  async function refreshSuggestions(nextSourceRoot = sourceRoot, nextOutputRoot = outputRoot) {
+  async function refreshSuggestions(
+    nextSourceRoot = sourceRoot,
+    nextOutputRoot = outputRoot,
+    nextRules = rules,
+    nextRecursive = settings.scanSubdirectories
+  ) {
     if (!nextSourceRoot) {
       setSuggestionResult(null)
       setSelectedSuggestions(new Set())
@@ -165,8 +176,9 @@ export default function App() {
         window.api.suggestFields({
           sourceRoot: nextSourceRoot,
           outputRoot: nextOutputRoot,
-          rules,
+          rules: nextRules,
           maxResults: 18,
+          recursive: nextRecursive,
           taskId
         })
       )
@@ -201,7 +213,9 @@ export default function App() {
       if (payload.state.settings.lastSourceRoot) {
         await refreshSuggestions(
           payload.state.settings.lastSourceRoot,
-          payload.state.settings.lastOutputRoot
+          payload.state.settings.lastOutputRoot,
+          payload.state.rules,
+          payload.state.settings.scanSubdirectories
         )
       }
     })()
@@ -256,7 +270,7 @@ export default function App() {
     await persistState(rules, nextSettings)
     setPreview(null)
     setNotice({ tone: 'neutral', message: '源目录已更新，正在重新分析字段建议。' })
-    await refreshSuggestions(picked, nextSettings.lastOutputRoot)
+    await refreshSuggestions(picked, nextSettings.lastOutputRoot, rules, nextSettings.scanSubdirectories)
   }
 
   async function handlePickOutput() {
@@ -274,7 +288,7 @@ export default function App() {
     setPreview(null)
     setNotice({ tone: 'neutral', message: '输出根目录已更新。' })
     if (sourceRoot) {
-      await refreshSuggestions(sourceRoot, picked)
+      await refreshSuggestions(sourceRoot, picked, rules, nextSettings.scanSubdirectories)
     }
   }
 
@@ -362,7 +376,7 @@ export default function App() {
   async function handleDeleteRule(rule: RuleConfig) {
     requestConfirmation({
       title: '删除规则',
-      description: `删除后，“${rule.name}” 将不再参与预览和整理。`,
+      description: `删除后，“${rule.name}”将不再参与预览和整理。`,
       confirmLabel: '确认删除',
       confirmTone: 'danger',
       onConfirm: async () => {
@@ -446,7 +460,16 @@ export default function App() {
         return
       }
 
-      const nextRules = normalizeRules([...rules, ...importedRules.map((rule, index) => ({ ...rule, id: `${rule.id}-${index}-${crypto.randomUUID()}` }))])
+      const nextRules = normalizeRules(
+        [
+          ...rules,
+          ...importedRules.map((rule, index) => ({
+            ...rule,
+            id: `${rule.id}-${index}-${crypto.randomUUID()}`
+          }))
+        ]
+      )
+
       await persistState(nextRules, settings)
       setNotice({ tone: 'success', message: `已导入 ${importedRules.length} 条规则。` })
     } catch (error) {
@@ -529,11 +552,12 @@ export default function App() {
     try {
       const result = await runWithTask('preview', (taskId) =>
         window.api.generatePreview({
-          sourceRoot,
-          outputRoot,
-          rules,
-          taskId
-        })
+            sourceRoot,
+            outputRoot,
+            rules,
+            recursive: settings.scanSubdirectories,
+            taskId
+          })
       )
 
       setPreview({
@@ -572,7 +596,7 @@ export default function App() {
 
     requestConfirmation({
       title: '开始整理文件',
-      description: '确认后将按当前预览执行整理。你可以在首页查看进度，也可以在完成后撤销最近一次整理。',
+      description: '确认后会按当前预览执行整理。你可以在首页查看进度，也可以在完成后撤销最近一次整理。',
       confirmLabel: '确认开始整理',
       confirmTone: 'default',
       onConfirm: async () => {
@@ -582,6 +606,7 @@ export default function App() {
               sourceRoot,
               outputRoot,
               rules,
+              recursive: settings.scanSubdirectories,
               taskId
             })
           )
@@ -607,8 +632,8 @@ export default function App() {
 
   function handleUndo(runId: string) {
     requestConfirmation({
-      title: '撤销上一次整理',
-      description: '系统会尝试把最近整理回源路径。如果原路径已存在文件，会自动改名避免覆盖。',
+      title: '撤销最近一次整理',
+      description: '系统会尝试把最近整理恢复到原路径。如果原路径已有文件，会自动改名避免覆盖。',
       confirmLabel: '确认撤销',
       confirmTone: 'default',
       onConfirm: async () => {
@@ -683,30 +708,25 @@ export default function App() {
   }
 
   const navItems = [
-    {
-      key: 'home',
-      label: '首页',
-      icon: Orbit
-    },
-    {
-      key: 'rules',
-      label: '规则管理',
-      icon: LayoutPanelLeft
-    },
-    {
-      key: 'guide',
-      label: '说明',
-      icon: ScrollText
-    }
+    { key: 'home', label: '首页' },
+    { key: 'rules', label: '规则管理' },
+    { key: 'guide', label: '说明' }
   ] as const
+
+  const currentViewLabel =
+    settings.windowLayout.activeView === 'home'
+      ? '工作台'
+      : settings.windowLayout.activeView === 'rules'
+        ? '规则台'
+        : '说明页'
 
   if (isBootstrapping) {
     return (
       <div className="app-shell">
-        <div className="mx-auto flex min-h-screen w-full max-w-[1440px] items-center justify-center px-6 py-12">
-          <div className="glass-tile rounded-[28px] px-8 py-10 text-center shadow-float">
+        <div className="shell-inner items-center justify-center">
+          <div className="glass-tile px-8 py-10 text-center">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Uno / 一格</p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#0f172a]">正在加载工作台…</h1>
+            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-fg-default">正在加载工作台…</h1>
           </div>
         </div>
       </div>
@@ -715,59 +735,73 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="mesh-grid" />
-      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-6 px-5 py-5 md:px-8 md:py-7">
-        <header className="topbar rounded-[26px] px-5 py-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-4">
-              <div className="brand-mark">
-                <span>U</span>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Uno</p>
-                <h1 className="text-2xl font-semibold tracking-[-0.04em] text-[#0f172a]">一格</h1>
-              </div>
-            </div>
-
-            <nav className="flex flex-wrap gap-2">
-              {navItems.map((item) => {
-                const Icon = item.icon
-                const active = settings.windowLayout.activeView === item.key
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    className={`nav-pill ${active ? 'nav-pill-active' : ''}`}
-                    onClick={() =>
-                      void applySettings({
-                        windowLayout: {
-                          ...settings.windowLayout,
-                          activeView: item.key
-                        }
-                      })
-                    }
-                  >
-                    <Icon className="h-4 w-4" />
-                    {item.label}
-                  </button>
-                )
-              })}
-            </nav>
-
-            <div className="hidden items-center gap-2 text-sm text-fg-muted xl:flex">
-              <span>{sourceRoot || '未选择源目录'}</span>
-              <ArrowRight className="h-4 w-4" />
-              <span>{outputRoot || '未选择输出根目录'}</span>
+      <header className="topbar">
+        <div className="topbar-brand-group">
+          <div className="brand-mark">
+            <span className="text-sm font-semibold tracking-[-0.04em] text-accent">U</span>
+          </div>
+          <div className="topbar-brand-copy">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-accent">Uno</p>
+            <div className="mt-1 flex items-center gap-2">
+              <p className="text-sm font-semibold text-fg-default">一格</p>
+              <span className="topbar-status-pill">{currentViewLabel}</span>
             </div>
           </div>
-        </header>
+        </div>
 
+        <nav className="flex flex-1 items-center justify-center gap-1 overflow-x-auto px-1">
+          {navItems.map((item) => {
+            const active = settings.windowLayout.activeView === item.key
+            return (
+              <button
+                key={item.key}
+                type="button"
+                className={`nav-pill ${active ? 'nav-pill-active' : ''}`}
+                onClick={() =>
+                  void applySettings({
+                    windowLayout: {
+                      ...settings.windowLayout,
+                      activeView: item.key
+                    }
+                  })
+                }
+              >
+                {item.label}
+              </button>
+            )
+          })}
+        </nav>
+
+        <Button
+          size="sm"
+          variant="default"
+          className="topbar-cta"
+          onClick={() => {
+            if (settings.windowLayout.activeView === 'home') {
+              void handleExecute()
+              return
+            }
+
+            void applySettings({
+              windowLayout: {
+                ...settings.windowLayout,
+                activeView: 'home'
+              }
+            })
+          }}
+        >
+          {settings.windowLayout.activeView === 'home' ? '开始整理' : '返回工作台'}
+        </Button>
+      </header>
+
+      <main className="shell-inner">
         <NoticeBanner notice={notice} />
 
         {settings.windowLayout.activeView === 'home' ? (
           <HomePage
             sourceRoot={sourceRoot}
             outputRoot={outputRoot}
+            scanSubdirectories={settings.scanSubdirectories}
             preview={preview}
             previewTab={settings.windowLayout.activeTab}
             suggestionResult={suggestionResult}
@@ -785,6 +819,23 @@ export default function App() {
             }
             onPickSource={() => void handlePickSource()}
             onPickOutput={() => void handlePickOutput()}
+            onToggleScanSubdirectories={(enabled) => {
+              void (async () => {
+                const nextSettings: AppSettings = {
+                  ...settings,
+                  scanSubdirectories: enabled
+                }
+                await persistState(rules, nextSettings)
+                setPreview(null)
+                setNotice({
+                  tone: 'neutral',
+                  message: enabled ? '已开启递归扫描子目录。' : '已关闭递归扫描子目录。'
+                })
+                if (sourceRoot) {
+                  await refreshSuggestions(sourceRoot, outputRoot, rules, enabled)
+                }
+              })()
+            }}
             onRefreshSuggestions={() => void refreshSuggestions()}
             onCreateRulesFromSuggestions={(openRulesPage) => void handleCreateRulesFromSuggestions(openRulesPage)}
             onGeneratePreview={() => void handleGeneratePreview()}
@@ -885,17 +936,20 @@ export default function App() {
 
         {settings.windowLayout.activeView === 'guide' ? <GuidePage /> : null}
 
-        <footer className="flex flex-col gap-2 rounded-[24px] border border-[rgba(15,23,42,0.08)] bg-white/70 px-5 py-4 text-sm text-fg-muted backdrop-blur xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-fg-default">一格</span>
-            <span>让文件整理像排产一样清晰。</span>
+        <footer className="shell-footer">
+          <div className="shell-footer-brand">
+            <span className="font-semibold text-fg-default">Uno / 一格</span>
+            <span>黑色玻璃工作台 路 文件整理主路径</span>
           </div>
-          <div className="flex flex-wrap gap-4">
-            <span>规则数：{rules.length}</span>
-            <span>最近更新：{history[0] ? formatDateTime(history[0].finishedAt) : '暂无'}</span>
+          <div className="shell-footer-stats">
+            <span className="shell-footer-pill">规则 {rules.length}</span>
+            <span className="shell-footer-pill">源目录 {sourceRoot ? '已选择' : '未选择'}</span>
+            <span className="shell-footer-pill">输出目录 {outputRoot ? '已选择' : '未选择'}</span>
+            <span className="shell-footer-pill">{settings.scanSubdirectories ? '递归扫描已开启' : '递归扫描已关闭'}</span>
+            <span className="shell-footer-pill">最近记录 {history[0] ? formatDateTime(history[0].finishedAt) : '暂无'}</span>
           </div>
         </footer>
-      </div>
+      </main>
 
       <RuleEditorDialog
         draft={ruleDraft}
